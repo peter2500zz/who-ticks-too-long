@@ -11,6 +11,7 @@ package plus.mygo.whotickstoolong.profile;
  * @param samplerCpuNanos       CPU time burned by the sampler thread, or -1 if unavailable
  * @param instrumentedObjects   ticked objects the hot path has published so far
  * @param ringBytes             heap held by the sample ring
+ * @param spanNanos             wall time monitoring has been running, the denominator for shares
  */
 public record SamplerStats(
 		boolean running,
@@ -20,7 +21,8 @@ public record SamplerStats(
 		double achievedRateHz,
 		long samplerCpuNanos,
 		long instrumentedObjects,
-		long ringBytes
+		long ringBytes,
+		long spanNanos
 ) {
 	/**
 	 * Nanoseconds the hot-path instrumentation adds per ticked object.
@@ -35,6 +37,22 @@ public record SamplerStats(
 	/** Estimated wall time the hot path has spent on instrumentation, in nanoseconds. */
 	public double estimatedHotPathNanos() {
 		return this.instrumentedObjects * HOT_PATH_NANOS_PER_OBJECT;
+	}
+
+	/**
+	 * The number that actually matters: what fraction of elapsed wall time the server thread
+	 * has given up to instrumentation, as a percentage.
+	 */
+	public double hotPathPercentOfWall() {
+		return this.spanNanos <= 0L ? 0.0 : this.estimatedHotPathNanos() / this.spanNanos * 100.0;
+	}
+
+	/** Sampler thread CPU as a percentage of one core, or -1 where CPU time is unavailable. */
+	public double samplerPercentOfOneCore() {
+		if (this.samplerCpuNanos < 0L || this.spanNanos <= 0L) {
+			return -1.0;
+		}
+		return (double) this.samplerCpuNanos / this.spanNanos * 100.0;
 	}
 
 	public double discardRate() {

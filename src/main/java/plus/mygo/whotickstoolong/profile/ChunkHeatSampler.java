@@ -130,7 +130,8 @@ public final class ChunkHeatSampler {
 				achieved,
 				this.samplerCpuNanos(),
 				TickContext.readEnterCount(),
-				this.ring.approximateBytes());
+				this.ring.approximateBytes(),
+				span);
 	}
 
 	/** Exact CPU time of the sampler thread, or -1 where the JVM does not expose it. */

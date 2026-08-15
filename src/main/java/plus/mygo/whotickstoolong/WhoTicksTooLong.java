@@ -1,13 +1,18 @@
 package plus.mygo.whotickstoolong;
 
 import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import plus.mygo.whotickstoolong.command.WttlCommand;
+import plus.mygo.whotickstoolong.profile.ChunkProfiler;
 
 /**
- * Entry point. Everything this mod does is opt-in at runtime: loading it costs
- * nothing beyond registering the command, and no profiling machinery starts
- * until an operator switches a granularity level on.
+ * Entry point. Everything this mod does is opt-in at runtime: loading it registers a command
+ * and two lifecycle listeners, and no profiling machinery starts, allocates, or instruments
+ * anything until an operator switches a level of monitoring on.
  */
 public final class WhoTicksTooLong implements ModInitializer {
 	public static final String MOD_ID = "whotickstoolong";
@@ -15,6 +20,15 @@ public final class WhoTicksTooLong implements ModInitializer {
 
 	@Override
 	public void onInitialize() {
+		CommandRegistrationCallback.EVENT.register(
+				(dispatcher, registryAccess, environment) -> WttlCommand.register(dispatcher));
+
+		// Publishes which level is about to tick — once per level per tick, not per object.
+		ServerTickEvents.START_LEVEL_TICK.register(level -> ChunkProfiler.get().onLevelTickStart(level));
+
+		// A reloading integrated server must never leave a sampler thread behind.
+		ServerLifecycleEvents.SERVER_STOPPING.register(server -> ChunkProfiler.get().shutdown());
+
 		LOGGER.info("Who Ticks Too Long is loaded and idle; no tick instrumentation is active.");
 	}
 }

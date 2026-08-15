@@ -9,6 +9,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import plus.mygo.whotickstoolong.profile.TickContext;
 import plus.mygo.whotickstoolong.profile.TickPhase;
+import plus.mygo.whotickstoolong.profile.deep.DeepProbe;
 
 /**
  * Publishes the chunk behind each block entity tick.
@@ -19,7 +20,8 @@ import plus.mygo.whotickstoolong.profile.TickPhase;
  *
  * <p>The class is private, so it has to be named by string rather than by class literal.
  * {@code getPos()} is the same call vanilla already makes for every ticker on this path, so
- * it is known to be cheap and allocation-free.
+ * it is known to be cheap and allocation-free; {@code getType()} is only called for chunks
+ * under deep inspection.
  */
 @Mixin(targets = "net.minecraft.world.level.chunk.LevelChunk$BoundTickingBlockEntity")
 public abstract class BoundTickingBlockEntityMixin {
@@ -27,13 +29,23 @@ public abstract class BoundTickingBlockEntityMixin {
 	@Shadow
 	public abstract BlockPos getPos();
 
+	@Shadow
+	public abstract String getType();
+
 	@Inject(method = "tick()V", at = @At("HEAD"))
 	private void wttl$enterBlockEntityTick(CallbackInfo ci) {
-		TickContext.enter(ChunkPos.pack(this.getPos()), TickPhase.BLOCK_ENTITY);
+		BlockPos pos = this.getPos();
+		long chunkKey = ChunkPos.pack(pos);
+		TickContext.enter(chunkKey, TickPhase.BLOCK_ENTITY);
+
+		if (DeepProbe.isTarget(chunkKey)) {
+			DeepProbe.begin(chunkKey, TickPhase.BLOCK_ENTITY, this.getType(), pos);
+		}
 	}
 
 	@Inject(method = "tick()V", at = @At("RETURN"))
 	private void wttl$exitBlockEntityTick(CallbackInfo ci) {
+		DeepProbe.end();
 		TickContext.exit();
 	}
 }

@@ -1,6 +1,5 @@
 package plus.mygo.whotickstoolong.profile;
 
-import net.minecraft.server.level.ServerLevel;
 import org.jetbrains.annotations.Nullable;
 import plus.mygo.whotickstoolong.WhoTicksTooLong;
 
@@ -106,11 +105,11 @@ public final class ChunkProfiler {
 	 * <p>Called once per level per tick rather than once per ticked object, which is why the
 	 * per-object hot path only has to carry a chunk and a phase.
 	 */
-	public void onLevelTickStart(ServerLevel level) {
+	public void onLevelTickStart(int dimensionId) {
 		if (!this.isEnabled()) {
 			return;
 		}
-		TickContext.setDimension(this.dimensions.idOf(level.dimension()));
+		TickContext.setDimension(dimensionId);
 	}
 
 	/** Releases everything on shutdown so a reloading server never leaks a sampler thread. */

@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import plus.mygo.whotickstoolong.command.WttlCommand;
 import plus.mygo.whotickstoolong.profile.ChunkProfiler;
+import plus.mygo.whotickstoolong.profile.deep.DeepProfiler;
 
 /**
  * Entry point. Everything this mod does is opt-in at runtime: loading it registers a command
@@ -23,11 +24,24 @@ public final class WhoTicksTooLong implements ModInitializer {
 		CommandRegistrationCallback.EVENT.register(
 				(dispatcher, registryAccess, environment) -> WttlCommand.register(dispatcher));
 
-		// Publishes which level is about to tick — once per level per tick, not per object.
-		ServerTickEvents.START_LEVEL_TICK.register(level -> ChunkProfiler.get().onLevelTickStart(level));
+		// Publishes which level is about to tick — once per level per tick, not per object —
+		// and drives deep-inspection expiry, which must happen on the server thread.
+		ServerTickEvents.START_LEVEL_TICK.register(level -> {
+			ChunkProfiler chunks = ChunkProfiler.get();
+			DeepProfiler deep = DeepProfiler.get();
+			if (!chunks.isEnabled() && !deep.isRunning()) {
+				return;
+			}
+			int dimensionId = chunks.dimensions().idOf(level.dimension());
+			chunks.onLevelTickStart(dimensionId);
+			deep.onLevelTickStart(dimensionId);
+		});
 
-		// A reloading integrated server must never leave a sampler thread behind.
-		ServerLifecycleEvents.SERVER_STOPPING.register(server -> ChunkProfiler.get().shutdown());
+		// A reloading integrated server must never leave a sampler thread or recording behind.
+		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
+			DeepProfiler.get().shutdown();
+			ChunkProfiler.get().shutdown();
+		});
 
 		LOGGER.info("Who Ticks Too Long is loaded and idle; no tick instrumentation is active.");
 	}

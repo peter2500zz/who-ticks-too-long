@@ -29,6 +29,9 @@ processResources {
 
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 25
+	// Surface deprecated Minecraft APIs by name: leaning on one is a version-fragility
+	// risk we want to see rather than discover after a game update.
+	it.options.compilerArgs << '-Xlint:deprecation'
 }
 
 java {

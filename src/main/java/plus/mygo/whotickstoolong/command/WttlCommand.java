@@ -4,6 +4,7 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -12,13 +13,18 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.commands.arguments.DimensionArgument;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
+import org.jetbrains.annotations.Nullable;
 import plus.mygo.whotickstoolong.profile.ChunkProfiler;
 import plus.mygo.whotickstoolong.profile.HeatReport;
 import plus.mygo.whotickstoolong.profile.HeatWindow;
 import plus.mygo.whotickstoolong.profile.SamplerStats;
+import plus.mygo.whotickstoolong.profile.deep.DeepProfiler;
+import plus.mygo.whotickstoolong.profile.deep.ObjectBreakdown;
 
 /**
  * The {@code /wttl} command tree: switch a level of monitoring on or off, ask what the
@@ -47,6 +53,25 @@ public final class WttlCommand {
 				.then(Commands.literal("chunk")
 						.then(Commands.literal("enable").executes(context -> setChunkMonitoring(context, true)))
 						.then(Commands.literal("disable").executes(context -> setChunkMonitoring(context, false))))
+				.then(Commands.literal("object")
+						.then(Commands.literal("enable")
+								.then(Commands.argument("chunkX", IntegerArgumentType.integer())
+										.then(Commands.argument("chunkZ", IntegerArgumentType.integer())
+												.executes(context -> startDeep(context, DeepProfiler.DEFAULT_DURATION, null))
+												.then(Commands.literal("until-stopped")
+														.executes(context -> startDeep(context, null, null)))
+												.then(Commands.argument("seconds",
+																IntegerArgumentType.integer(1, DeepProfiler.MAX_DURATION_SECONDS))
+														.executes(context -> startDeep(context, seconds(context), null))
+														.then(Commands.argument("dimension", DimensionArgument.dimension())
+																.executes(context -> startDeep(context, seconds(context),
+																		DimensionArgument.getDimension(context, "dimension"))))))))
+						.then(Commands.literal("disable")
+								.executes(WttlCommand::stopDeep))
+						.then(Commands.literal("report")
+								.executes(context -> deepReport(context, DEFAULT_COUNT))
+								.then(Commands.argument("count", IntegerArgumentType.integer(1, MAX_COUNT))
+										.executes(context -> deepReport(context, count(context))))))
 				.then(Commands.literal("top")
 						.executes(context -> top(context, DEFAULT_COUNT, DEFAULT_WINDOW, 1))
 						.then(Commands.argument("count", IntegerArgumentType.integer(1, MAX_COUNT))
@@ -65,6 +90,106 @@ public final class WttlCommand {
 
 	private static HeatWindow window(CommandContext<CommandSourceStack> context) {
 		return HeatWindow.byName(StringArgumentType.getString(context, "window"));
+	}
+
+	private static Duration seconds(CommandContext<CommandSourceStack> context) {
+		return Duration.ofSeconds(IntegerArgumentType.getInteger(context, "seconds"));
+	}
+
+	// -------------------------------------------------------------- deep inspection
+
+	/** @param duration null means run until stopped by hand */
+	private static int startDeep(CommandContext<CommandSourceStack> context,
+			@Nullable Duration duration, @Nullable ServerLevel explicitLevel) {
+		CommandSourceStack source = context.getSource();
+		ServerLevel level = explicitLevel != null ? explicitLevel : source.getLevel();
+		int chunkX = IntegerArgumentType.getInteger(context, "chunkX");
+		int chunkZ = IntegerArgumentType.getInteger(context, "chunkZ");
+		long chunkKey = ChunkPos.pack(chunkX, chunkZ);
+		int dimensionId = ChunkProfiler.get().dimensions().idOf(level.dimension());
+
+		try {
+			DeepProfiler.get().start(dimensionId, chunkKey, duration);
+		} catch (IllegalStateException | UnsupportedOperationException e) {
+			source.sendFailure(Component.literal(e.getMessage()));
+			return 0;
+		}
+
+		source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
+				"Inspecting chunk [%d, %d] in %s %s. Read it with /wttl object report.",
+				chunkX, chunkZ, level.dimension().identifier(),
+				duration == null ? "until stopped" : "for " + duration.toSeconds() + "s"))
+				.withStyle(ChatFormatting.GREEN), true);
+		return 1;
+	}
+
+	private static int stopDeep(CommandContext<CommandSourceStack> context) {
+		ObjectBreakdown breakdown = DeepProfiler.get().stop();
+		if (breakdown == null) {
+			context.getSource().sendFailure(Component.literal("No inspection is running."));
+			return 0;
+		}
+		context.getSource().sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
+				"Inspection stopped after %,d object ticks. Read it with /wttl object report.",
+				breakdown.observedEvents())).withStyle(ChatFormatting.YELLOW), true);
+		return 1;
+	}
+
+	private static int deepReport(CommandContext<CommandSourceStack> context, int count) {
+		CommandSourceStack source = context.getSource();
+		ObjectBreakdown breakdown = DeepProfiler.get().breakdown(count, count);
+
+		if (breakdown == null) {
+			source.sendFailure(Component.literal(
+					"Nothing to report. Start one with /wttl object enable <chunkX> <chunkZ>."));
+			return 0;
+		}
+		if (breakdown.observedEvents() == 0L) {
+			source.sendFailure(Component.literal(String.format(Locale.ROOT,
+					"No object ticks recorded in chunk [%d, %d] yet — nothing there is ticking.",
+					ChunkPos.getX(breakdown.chunkKey()), ChunkPos.getZ(breakdown.chunkKey()))));
+			return 0;
+		}
+
+		String dimension = ChunkProfiler.get().dimensions().nameOf(breakdown.dimensionId());
+		source.sendSuccess(() -> header(String.format(Locale.ROOT, "Chunk [%d, %d] in %s",
+				ChunkPos.getX(breakdown.chunkKey()), ChunkPos.getZ(breakdown.chunkKey()), dimension)), false);
+		source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
+				"  %.3f ms per tick over %,d ticks — %,d object ticks in %.1fs%s",
+				breakdown.millisPerTick(), breakdown.ticksObserved(), breakdown.observedEvents(),
+				breakdown.sessionNanos() / 1e9,
+				DeepProfiler.get().isRunning() ? ", still running" : ""))
+				.withStyle(ChatFormatting.DARK_GRAY), false);
+
+		source.sendSuccess(() -> Component.literal("  by type:").withStyle(ChatFormatting.GRAY), false);
+		int typeRank = 1;
+		for (ObjectBreakdown.TypeRow row : breakdown.types()) {
+			int shown = typeRank++;
+			source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
+					"   %2d. %5.1f%%  %-28s %8.3f ms/tick  avg %6.1f us  worst %6.1f us  [%s]",
+					shown, row.shareOf(breakdown) * 100.0, row.type(), row.millisPerTick(breakdown),
+					row.averageMicros(), row.maxNanos() / 1e3, row.kind())), false);
+		}
+
+		if (!breakdown.instances().isEmpty()) {
+			source.sendSuccess(() -> Component.literal("  worst individual objects:")
+					.withStyle(ChatFormatting.GRAY), false);
+			int instanceRank = 1;
+			for (ObjectBreakdown.InstanceRow row : breakdown.instances()) {
+				int shown = instanceRank++;
+				source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
+						"   %2d. %5.1f%%  %-28s %s[%d, %d, %d]  %,d ticks",
+						shown, row.shareOf(breakdown) * 100.0, row.type(),
+						row.isMovable() ? "now at " : "", row.x(), row.y(), row.z(), row.ticks())), false);
+			}
+		}
+
+		if (breakdown.instanceCapReached()) {
+			source.sendSuccess(() -> Component.literal(
+					"  (too many distinct objects to track them all; type totals are still complete)")
+					.withStyle(ChatFormatting.DARK_GRAY), false);
+		}
+		return 1;
 	}
 
 	// ------------------------------------------------------------------ actions

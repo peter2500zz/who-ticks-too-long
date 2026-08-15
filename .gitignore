@@ -1,0 +1,28 @@
+# Gradle
+.gradle/
+**/build/
+
+# Fabric Loom
+.fabric/
+remappedSrc/
+
+# Development runtime — contains generated worlds, never commit
+run/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+bin/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AI-authored design notes; the reviewed README.md is maintained separately
+README.md.ai

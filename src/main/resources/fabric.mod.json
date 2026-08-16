@@ -7,6 +7,8 @@
 	"authors": [
 		"peter2500zz"
 	],
+	"license": "MIT",
+	"icon": "assets/whotickstoolong/icon.png",
 	"environment": "*",
 	"entrypoints": {
 		"main": [

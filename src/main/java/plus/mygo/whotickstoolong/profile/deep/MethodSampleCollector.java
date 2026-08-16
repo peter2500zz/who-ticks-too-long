@@ -120,7 +120,7 @@ final class MethodSampleCollector {
 	private static String describe(RecordedFrame frame) {
 		RecordedMethod method = frame.getMethod();
 		if (method == null) {
-			return "(unknown)";
+			return "unknown";
 		}
 		String owner = method.getType() == null ? "?" : simpleName(method.getType().getName());
 		return owner + '.' + method.getName();

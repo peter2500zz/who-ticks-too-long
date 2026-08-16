@@ -69,7 +69,7 @@ public final class DeepProbe {
 	 * come back empty for an unregistered object.
 	 */
 	public static void begin(long chunkKey, TickPhase phase, @Nullable Identifier type, BlockPos pos) {
-		begin(chunkKey, phase, type == null ? "(unregistered)" : type.toString(), pos);
+		begin(chunkKey, phase, type == null ? "unregistered" : type.toString(), pos);
 	}
 
 	/** Closes whatever {@link #begin} opened. Safe to call unconditionally. */

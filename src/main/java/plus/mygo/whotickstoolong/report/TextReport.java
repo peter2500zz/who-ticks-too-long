@@ -2,6 +2,7 @@ package plus.mygo.whotickstoolong.report;
 
 import java.util.List;
 import java.util.Locale;
+import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.ChunkPos;
 import org.jetbrains.annotations.Nullable;
 import plus.mygo.whotickstoolong.profile.deep.MethodBreakdown;
@@ -32,8 +33,17 @@ public final class TextReport {
 		out.append(heading).append(System.lineSeparator());
 		out.append(RULE).append(System.lineSeparator());
 
-		out.append(String.format(Locale.ROOT, "Chunk [%d, %d] in %s%n",
-				ChunkPos.getX(objects.chunkKey()), ChunkPos.getZ(objects.chunkKey()), dimensionName));
+		int chunkX = ChunkPos.getX(objects.chunkKey());
+		int chunkZ = ChunkPos.getZ(objects.chunkKey());
+		int originX = SectionPos.sectionToBlockCoord(chunkX);
+		int originZ = SectionPos.sectionToBlockCoord(chunkZ);
+
+		out.append(String.format(Locale.ROOT, "Chunk [%d, %d] in %s%n", chunkX, chunkZ, dimensionName));
+		// Chunk coordinates are not somewhere a player can walk to; block coordinates are.
+		out.append(String.format(Locale.ROOT, "  Blocks X %d..%d, Z %d..%d - origin %d, %d%n",
+				originX, SectionPos.sectionToBlockCoord(chunkX + 1) - 1,
+				originZ, SectionPos.sectionToBlockCoord(chunkZ + 1) - 1,
+				originX, originZ));
 		out.append(String.format(Locale.ROOT,
 				"  %.3f ms per tick over %,d ticks - %,d object ticks in %.1f s%n%n",
 				objects.millisPerTick(), objects.ticksObserved(), objects.observedEvents(),

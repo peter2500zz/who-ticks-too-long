@@ -15,7 +15,6 @@ import org.jetbrains.annotations.Nullable;
 import plus.mygo.whotickstoolong.WhoTicksTooLong;
 import plus.mygo.whotickstoolong.profile.ChunkProfiler;
 import plus.mygo.whotickstoolong.profile.HeatReport;
-import plus.mygo.whotickstoolong.profile.HeatWindow;
 import plus.mygo.whotickstoolong.profile.deep.DeepProfiler;
 import plus.mygo.whotickstoolong.profile.deep.MethodBreakdown;
 import plus.mygo.whotickstoolong.profile.deep.ObjectBreakdown;
@@ -43,8 +42,8 @@ public final class AutoDrillDown {
 	private static final Duration COOLDOWN_PER_CHUNK = Duration.ofMinutes(5);
 	private static final Duration CAPTURE_DURATION = Duration.ofSeconds(30);
 
-	/** The short window, so a spike is judged on what is happening now rather than an average. */
-	private static final HeatWindow TRIGGER_WINDOW = HeatWindow.SHORT;
+	/** A short window, so a spike is judged on what is happening now rather than an average. */
+	private static final Duration TRIGGER_WINDOW = Duration.ofSeconds(10);
 
 	private static final long EVALUATION_INTERVAL_NANOS = Duration.ofSeconds(1).toNanos();
 	private static final int MAX_KEPT_CAPTURES = 8;

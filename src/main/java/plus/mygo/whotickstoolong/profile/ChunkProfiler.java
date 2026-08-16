@@ -1,5 +1,6 @@
 package plus.mygo.whotickstoolong.profile;
 
+import java.time.Duration;
 import org.jetbrains.annotations.Nullable;
 import plus.mygo.whotickstoolong.WhoTicksTooLong;
 
@@ -17,6 +18,12 @@ public final class ChunkProfiler {
 	 * plenty to rank chunks, while the sampler thread stays far below one percent of a core.
 	 */
 	public static final int DEFAULT_SAMPLE_RATE_HZ = 1000;
+
+	/**
+	 * How far back the sample ring reaches. Any window may be asked for, but one longer than
+	 * this simply returns everything retained, and the report says so.
+	 */
+	public static final Duration RETENTION = Duration.ofMinutes(5);
 
 	private static final ChunkProfiler INSTANCE = new ChunkProfiler();
 
@@ -51,7 +58,7 @@ public final class ChunkProfiler {
 			return false;
 		}
 
-		int capacity = Math.multiplyExact(HeatWindow.longest().seconds(), this.sampleRateHz);
+		int capacity = Math.multiplyExact(Math.toIntExact(RETENTION.toSeconds()), this.sampleRateHz);
 		SampleRing freshRing = new SampleRing(capacity);
 		ChunkHeatSampler freshSampler = new ChunkHeatSampler(freshRing, this.sampleRateHz);
 
@@ -89,7 +96,7 @@ public final class ChunkProfiler {
 	}
 
 	/** @return null when monitoring is off, so the caller can say so rather than show zeroes */
-	public @Nullable HeatReport report(HeatWindow window, int limit) {
+	public @Nullable HeatReport report(Duration window, int limit) {
 		SampleRing current = this.ring;
 		return current == null ? null : current.aggregate(window, limit, System.nanoTime());
 	}

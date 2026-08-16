@@ -3,6 +3,7 @@ package plus.mygo.whotickstoolong.command;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.exceptions.DynamicCommandExceptionType;
@@ -29,6 +30,7 @@ import org.jetbrains.annotations.Nullable;
 import plus.mygo.whotickstoolong.WhoTicksTooLong;
 import plus.mygo.whotickstoolong.auto.AutoCapture;
 import plus.mygo.whotickstoolong.auto.AutoDrillDown;
+import plus.mygo.whotickstoolong.i18n.Messages;
 import plus.mygo.whotickstoolong.profile.ChunkProfiler;
 import plus.mygo.whotickstoolong.profile.HeatReport;
 import plus.mygo.whotickstoolong.profile.SamplerStats;
@@ -57,7 +59,7 @@ public final class WttlCommand {
 	private static final Duration DEFAULT_WINDOW = Duration.ofMinutes(1);
 
 	private static final DynamicCommandExceptionType ERROR_BAD_WINDOW =
-			new DynamicCommandExceptionType(reason -> Component.literal(String.valueOf(reason)));
+			new DynamicCommandExceptionType(reason -> (Component) reason);
 
 	private WttlCommand() {
 	}
@@ -74,13 +76,13 @@ public final class WttlCommand {
 
 	// ------------------------------------------------------------------ branches
 
-	private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> chunkBranch() {
+	private static LiteralArgumentBuilder<CommandSourceStack> chunkBranch() {
 		return Commands.literal("chunk")
 				.then(Commands.literal("enable").executes(context -> setChunkMonitoring(context, true)))
 				.then(Commands.literal("disable").executes(context -> setChunkMonitoring(context, false)));
 	}
 
-	private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> topBranch() {
+	private static LiteralArgumentBuilder<CommandSourceStack> topBranch() {
 		return Commands.literal("top")
 				.executes(context -> top(context, DEFAULT_COUNT, DEFAULT_WINDOW, 1))
 				.then(Commands.argument("count", IntegerArgumentType.integer(1, MAX_COUNT))
@@ -93,7 +95,7 @@ public final class WttlCommand {
 												IntegerArgumentType.getInteger(context, "page"))))));
 	}
 
-	private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> objectBranch() {
+	private static LiteralArgumentBuilder<CommandSourceStack> objectBranch() {
 		return Commands.literal("object")
 				.then(Commands.literal("enable")
 						.then(Commands.argument("chunkX", IntegerArgumentType.integer())
@@ -125,7 +127,7 @@ public final class WttlCommand {
 				.then(Commands.literal("save").executes(WttlCommand::saveReport));
 	}
 
-	private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> autoBranch() {
+	private static LiteralArgumentBuilder<CommandSourceStack> autoBranch() {
 		return Commands.literal("auto")
 				.then(Commands.literal("enable")
 						.executes(context -> enableAuto(context,
@@ -149,6 +151,19 @@ public final class WttlCommand {
 		return IntegerArgumentType.getInteger(context, "count");
 	}
 
+	private static Duration seconds(CommandContext<CommandSourceStack> context) {
+		return Duration.ofSeconds(IntegerArgumentType.getInteger(context, "seconds"));
+	}
+
+	private static double mspt(CommandContext<CommandSourceStack> context) {
+		return IntegerArgumentType.getInteger(context, "mspt");
+	}
+
+	private static ServerLevel dimension(CommandContext<CommandSourceStack> context)
+			throws CommandSyntaxException {
+		return DimensionArgument.getDimension(context, "dimension");
+	}
+
 	/**
 	 * Accepts vanilla {@code /time} syntax extended with minutes and hours: 200, 200t, 30s,
 	 * 5m, 1h. A bare number means ticks, as it does in vanilla.
@@ -158,8 +173,8 @@ public final class WttlCommand {
 		String raw = StringArgumentType.getString(context, "window");
 		try {
 			return DurationSyntax.parse(raw);
-		} catch (IllegalArgumentException e) {
-			throw ERROR_BAD_WINDOW.create(e.getMessage());
+		} catch (DurationSyntax.InvalidDuration e) {
+			throw ERROR_BAD_WINDOW.create(Messages.of(context.getSource(), e.key(), e.args()));
 		}
 	}
 
@@ -174,90 +189,91 @@ public final class WttlCommand {
 		return SharedSuggestionProvider.suggest(DurationSyntax.COMMON_WINDOWS, builder);
 	}
 
-	private static Duration seconds(CommandContext<CommandSourceStack> context) {
-		return Duration.ofSeconds(IntegerArgumentType.getInteger(context, "seconds"));
+	private static void fail(CommandSourceStack source, String key, Object... args) {
+		source.sendFailure(Messages.of(source, key, args));
 	}
 
-	private static double mspt(CommandContext<CommandSourceStack> context) {
-		return IntegerArgumentType.getInteger(context, "mspt");
-	}
-
-	private static ServerLevel dimension(CommandContext<CommandSourceStack> context)
-			throws CommandSyntaxException {
-		return DimensionArgument.getDimension(context, "dimension");
+	private static String percent(double fraction) {
+		return WttlOutput.formatPercent(fraction * 100.0);
 	}
 
 	// ------------------------------------------------------------ chunk monitoring
 
 	private static int setChunkMonitoring(CommandContext<CommandSourceStack> context, boolean enable) {
+		CommandSourceStack source = context.getSource();
 		ChunkProfiler profiler = ChunkProfiler.get();
 		boolean changed = enable ? profiler.enable() : profiler.disable();
 
+		ChatReport out = new ChatReport(source);
 		if (!changed) {
-			context.getSource().sendFailure(Component.literal(
-					"Chunk heat monitoring is already " + (enable ? "on" : "off") + "."));
+			fail(source, "wttl.heat.already",
+					Messages.of(source, enable ? "wttl.status.heat.on" : "wttl.status.heat.off"));
 			return 0;
 		}
 
-		context.getSource().sendSuccess(() -> Component.literal(
-				enable
-						? "Chunk heat monitoring on. Ranking becomes meaningful after a few seconds of samples."
-						: "Chunk heat monitoring off. Sample buffer released.")
-				.withStyle(enable ? ChatFormatting.GREEN : ChatFormatting.YELLOW), true);
+		out.styled(enable ? ChatFormatting.GREEN : ChatFormatting.YELLOW,
+				enable ? "wttl.heat.enabled" : "wttl.heat.disabled");
+		out.broadcast();
 		return 1;
 	}
 
 	private static int status(CommandContext<CommandSourceStack> context) {
 		CommandSourceStack source = context.getSource();
 		SamplerStats stats = ChunkProfiler.get().stats();
+		ChatReport out = new ChatReport(source);
 
-		ChatReport out = new ChatReport();
-		out.line(WttlOutput.header("Who Ticks Too Long"));
+		out.raw(WttlOutput.header(out.text("wttl.title")));
 
-		// The number an operator needs before choosing an automatic drill-down threshold.
+		// The number an operator needs before choosing an automatic capture threshold.
 		double msptNow = source.getServer().getAverageTickTimeNanos() / 1e6;
-		out.line(WttlOutput.field("server", Component.literal(String.format(Locale.ROOT,
-				"%.2f ms/tick averaged over the last 100 ticks", msptNow))));
+		out.raw(WttlOutput.field(out.text("wttl.status.server"),
+				out.text("wttl.status.server.value", String.format(Locale.ROOT, "%.2f", msptNow))
+						.withStyle(ChatFormatting.WHITE)));
 
 		if (stats == null) {
-			out.line(WttlOutput.field("chunk heat",
-					Component.literal("off").withStyle(ChatFormatting.GRAY)));
-			out.line(Component.literal("  Nothing is instrumented and no memory is held.")
-					.withStyle(ChatFormatting.DARK_GRAY));
+			out.raw(WttlOutput.field(out.text("wttl.status.heat"),
+					out.text("wttl.status.heat.off").withStyle(ChatFormatting.GRAY)));
+			out.raw(WttlOutput.detail(out.text("wttl.status.heat.idle")));
 		} else {
-			out.line(WttlOutput.field("chunk heat", Component.literal(String.format(Locale.ROOT,
-					"on - %d Hz requested, %.0f Hz achieved", stats.requestedRateHz(), stats.achievedRateHz()))
-					.withStyle(ChatFormatting.GREEN)));
-			out.line(WttlOutput.detail(String.format(Locale.ROOT, "%,d samples · %,d discarded · %s",
-					stats.samplesTaken(), stats.samplesDiscarded(),
-					WttlOutput.formatPercent(stats.discardRate() * 100.0))));
-			out.line(WttlOutput.detail(String.format(Locale.ROOT, "buffer %,d KiB",
-					stats.ringBytes() / 1024L)));
-			out.line(WttlOutput.field("sampler thread", stats.samplerPercentOfOneCore() < 0.0
-					? "CPU time unavailable on this JVM"
-					: String.format(Locale.ROOT, "%.2fs CPU · %s of one core",
-							stats.samplerCpuNanos() / 1e9,
-							WttlOutput.formatPercent(stats.samplerPercentOfOneCore()))));
-			out.line(WttlOutput.field("hot path", Component.literal(
-					WttlOutput.formatPercent(stats.hotPathPercentOfWall()) + " of wall time")
-					.withStyle(ChatFormatting.GREEN)));
-			out.line(WttlOutput.detail(String.format(Locale.ROOT,
-					"%,d objects instrumented · about %.1fus total · estimated",
-					stats.instrumentedObjects(), stats.estimatedHotPathNanos() / 1e3)));
+			out.raw(WttlOutput.field(out.text("wttl.status.heat"),
+					out.text("wttl.status.heat.on", String.valueOf(stats.requestedRateHz()),
+							String.format(Locale.ROOT, "%.0f", stats.achievedRateHz()))
+							.withStyle(ChatFormatting.GREEN)));
+			out.raw(WttlOutput.detail(out.text("wttl.status.samples",
+					String.format(Locale.ROOT, "%,d", stats.samplesTaken()),
+					String.format(Locale.ROOT, "%,d", stats.samplesDiscarded()),
+					percent(stats.discardRate()))));
+			out.raw(WttlOutput.detail(out.text("wttl.status.buffer",
+					String.format(Locale.ROOT, "%,d", stats.ringBytes() / 1024L))));
+			out.raw(WttlOutput.field(out.text("wttl.status.sampler"),
+					stats.samplerPercentOfOneCore() < 0.0
+							? out.text("wttl.status.sampler.unavailable")
+							: out.text("wttl.status.sampler.value",
+									String.format(Locale.ROOT, "%.2f", stats.samplerCpuNanos() / 1e9),
+									WttlOutput.formatPercent(stats.samplerPercentOfOneCore()))));
+			out.raw(WttlOutput.field(out.text("wttl.status.hot_path"),
+					out.text("wttl.status.hot_path.value",
+							WttlOutput.formatPercent(stats.hotPathPercentOfWall()))
+							.withStyle(ChatFormatting.GREEN)));
+			out.raw(WttlOutput.detail(out.text("wttl.status.hot_path.detail",
+					String.format(Locale.ROOT, "%,d", stats.instrumentedObjects()),
+					String.format(Locale.ROOT, "%.1fus", stats.estimatedHotPathNanos() / 1e3))));
 		}
 
-		out.line(WttlOutput.field("deep inspection", Component.literal(
-				DeepProfiler.get().isRunning() ? "running" : "idle")));
+		out.raw(WttlOutput.field(out.text("wttl.status.deep"), out.text(
+				DeepProfiler.get().isRunning() ? "wttl.status.deep.running" : "wttl.status.deep.idle")));
 
 		AutoDrillDown auto = AutoDrillDown.get();
-		out.line(WttlOutput.field("automatic drill-down", Component.literal(auto.isEnabled()
-				? String.format(Locale.ROOT, "on - triggers above %.0f ms/tick with a chunk over %.0f%%; %d captured",
-						auto.msptThresholdMs(), auto.shareThreshold() * 100.0, auto.captures().size())
-				: "off").withStyle(auto.isEnabled() ? ChatFormatting.GREEN : ChatFormatting.GRAY)));
-		out.line(WttlOutput.field("reports",
-				Component.literal(ReportStore.DIRECTORY_NAME + "/ in the game directory")));
+		out.raw(WttlOutput.field(out.text("wttl.status.auto"), auto.isEnabled()
+				? out.text("wttl.status.auto.on",
+						String.format(Locale.ROOT, "%.0f", auto.msptThresholdMs()),
+						percent(auto.shareThreshold()),
+						String.valueOf(auto.captures().size())).withStyle(ChatFormatting.GREEN)
+				: out.text("wttl.status.auto.off").withStyle(ChatFormatting.GRAY)));
+		out.raw(WttlOutput.field(out.text("wttl.status.reports"),
+				out.text("wttl.status.reports.value", ReportStore.DIRECTORY_NAME)));
 
-		out.send(source);
+		out.send();
 		return 1;
 	}
 
@@ -268,32 +284,28 @@ public final class WttlCommand {
 		String label = DurationSyntax.format(window);
 
 		if (report == null) {
-			source.sendFailure(Component.literal(
-					"Chunk heat monitoring is off. Switch it on with /wttl chunk enable."));
+			fail(source, "wttl.heat.off");
 			return 0;
 		}
 		if (report.totalSamples() == 0) {
-			source.sendFailure(Component.literal("No samples in the last " + label + " yet."));
+			fail(source, "wttl.heat.no_samples", label);
 			return 0;
 		}
 
 		List<HeatReport.ChunkHeat> chunks = report.chunks();
 		if (chunks.isEmpty()) {
-			source.sendFailure(Component.literal(String.format(Locale.ROOT,
-					"No chunk work in the last %s - all %,d samples caught the server thread idle.",
-					label, report.totalSamples())));
+			fail(source, "wttl.heat.all_idle", label, String.format(Locale.ROOT, "%,d", report.totalSamples()));
 			return 0;
 		}
 		if (offset >= chunks.size()) {
-			source.sendFailure(Component.literal(
-					"Page " + page + " is past the end; only " + chunks.size() + " chunks were sampled."));
+			fail(source, "wttl.heat.page_past_end", String.valueOf(page), String.valueOf(chunks.size()));
 			return 0;
 		}
 
 		List<HeatReport.ChunkHeat> pageChunks = chunks.subList(offset, Math.min(offset + count, chunks.size()));
-		ChatReport out = new ChatReport();
+		ChatReport out = new ChatReport(source);
 		WttlOutput.appendHeat(out, report, pageChunks, offset + 1);
-		out.send(source);
+		out.send();
 		return pageChunks.size();
 	}
 
@@ -313,25 +325,28 @@ public final class WttlCommand {
 			flavour = DeepProfiler.get().start(dimensionId, chunkKey, duration, withMethods,
 					reportBackTo(source));
 		} catch (IllegalStateException | UnsupportedOperationException e) {
-			source.sendFailure(Component.literal(e.getMessage()));
+			source.sendFailure(Component.literal(String.valueOf(e.getMessage())));
 			return 0;
 		}
 
-		ChatReport out = new ChatReport();
-		out.line(Component.literal(String.format(Locale.ROOT,
-				"Inspecting chunk [%d, %d] %s", chunkX, chunkZ,
-				duration == null ? "until stopped" : "for " + duration.toSeconds() + "s"))
+		ChatReport out = new ChatReport(source);
+		out.raw(out.text("wttl.object.started", chunkX, chunkZ,
+				duration == null
+						? out.text("wttl.object.started.until_stopped")
+						: out.text("wttl.object.started.for", String.valueOf(duration.toSeconds())))
 				.withStyle(ChatFormatting.GREEN));
-		out.line(WttlOutput.detail(String.format(Locale.ROOT, "blocks %d,%d to %d,%d in %s",
+		out.raw(WttlOutput.detail(out.text("wttl.object.started.location",
 				SectionPos.sectionToBlockCoord(chunkX), SectionPos.sectionToBlockCoord(chunkZ),
 				SectionPos.sectionToBlockCoord(chunkX + 1) - 1, SectionPos.sectionToBlockCoord(chunkZ + 1) - 1,
-				level.dimension().identifier())));
+				level.dimension().identifier().toString())));
 		if (flavour != null) {
-			out.line(WttlOutput.detail("sampling methods with " + flavour.displayName()));
+			out.raw(WttlOutput.detail(out.text("wttl.object.started.sampling",
+					out.text(flavour.translationKey()))));
 		}
-		out.line(WttlOutput.detail("read it with /wttl object report"
-				+ (flavour == null ? "" : " and /wttl object methods")));
-		out.broadcast(source);
+		out.raw(WttlOutput.detail(out.text(flavour == null
+				? "wttl.object.started.hint"
+				: "wttl.object.started.hint_methods")));
+		out.broadcast();
 		return 1;
 	}
 
@@ -351,19 +366,17 @@ public final class WttlCommand {
 		return (objects, methods) -> {
 			CommandSourceStack target = resolveReportTarget(server, starterId);
 			if (target == null) {
-				WhoTicksTooLong.LOGGER.info(
-						"Inspection finished but whoever started it has left; it is still readable "
-								+ "with /wttl object report.");
+				WhoTicksTooLong.LOGGER.info(Messages.plain("wttl.auto.offline"));
 				return;
 			}
 
-			ChatReport out = new ChatReport();
-			out.line(Component.literal("Inspection finished.").withStyle(ChatFormatting.GREEN));
-			WttlOutput.appendObjects(out, objects, "");
+			ChatReport out = new ChatReport(target);
+			out.styled(ChatFormatting.GREEN, "wttl.object.finished");
+			WttlOutput.appendObjects(out, objects, false);
 			if (methods != null) {
 				WttlOutput.appendMethods(out, methods);
 			}
-			out.send(target);
+			out.send();
 		};
 	}
 
@@ -378,14 +391,14 @@ public final class WttlCommand {
 	}
 
 	private static int stopDeep(CommandContext<CommandSourceStack> context) {
+		CommandSourceStack source = context.getSource();
 		ObjectBreakdown breakdown = DeepProfiler.get().stop();
 		if (breakdown == null) {
-			context.getSource().sendFailure(Component.literal("No inspection is running."));
+			fail(source, "wttl.object.none_running");
 			return 0;
 		}
-		context.getSource().sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
-				"Inspection stopped after %,d object ticks. Read it with /wttl object report.",
-				breakdown.observedEvents())).withStyle(ChatFormatting.YELLOW), true);
+		new ChatReport(source).styled(ChatFormatting.YELLOW, "wttl.object.stopped",
+				String.format(Locale.ROOT, "%,d", breakdown.observedEvents())).broadcast();
 		return 1;
 	}
 
@@ -394,22 +407,20 @@ public final class WttlCommand {
 		ObjectBreakdown breakdown = DeepProfiler.get().breakdown(count, count);
 
 		if (breakdown == null) {
-			source.sendFailure(Component.literal(
-					"Nothing to report. Start one with /wttl object enable <chunkX> <chunkZ>."));
+			fail(source, "wttl.object.nothing_yet");
 			return 0;
 		}
 		if (breakdown.observedEvents() == 0L) {
-			source.sendFailure(Component.literal(String.format(Locale.ROOT,
-					"No object ticks recorded in chunk [%d, %d] at blocks %d,%d yet. Nothing there is ticking.",
-					ChunkPos.getX(breakdown.chunkKey()), ChunkPos.getZ(breakdown.chunkKey()),
-					SectionPos.sectionToBlockCoord(ChunkPos.getX(breakdown.chunkKey())),
-					SectionPos.sectionToBlockCoord(ChunkPos.getZ(breakdown.chunkKey())))));
+			int chunkX = ChunkPos.getX(breakdown.chunkKey());
+			int chunkZ = ChunkPos.getZ(breakdown.chunkKey());
+			fail(source, "wttl.object.no_ticks", chunkX, chunkZ,
+					SectionPos.sectionToBlockCoord(chunkX), SectionPos.sectionToBlockCoord(chunkZ));
 			return 0;
 		}
 
-		ChatReport out = new ChatReport();
-		WttlOutput.appendObjects(out, breakdown, DeepProfiler.get().isRunning() ? ", still running" : "");
-		out.send(source);
+		ChatReport out = new ChatReport(source);
+		WttlOutput.appendObjects(out, breakdown, DeepProfiler.get().isRunning());
+		out.send();
 		return 1;
 	}
 
@@ -418,21 +429,18 @@ public final class WttlCommand {
 		MethodBreakdown breakdown = DeepProfiler.get().methodBreakdown(count);
 
 		if (breakdown == null) {
-			source.sendFailure(Component.literal("No method samples. Method sampling needs the object "
-					+ "tick windows, so start it with /wttl object enable <x> <z> <seconds> methods."));
+			fail(source, "wttl.method.not_sampled");
 			return 0;
 		}
 		if (breakdown.samplesInChunk() == 0) {
-			source.sendFailure(Component.literal(String.format(Locale.ROOT,
-					"No stack samples landed inside the chunk. %,d were taken on the server thread. "
-							+ "Either the chunk is a very small slice of the tick, or sampling produced nothing.",
-					breakdown.samplesOnThread())));
+			fail(source, "wttl.method.none_inside",
+					String.format(Locale.ROOT, "%,d", breakdown.samplesOnThread()));
 			return 0;
 		}
 
-		ChatReport out = new ChatReport();
+		ChatReport out = new ChatReport(source);
 		WttlOutput.appendMethods(out, breakdown);
-		out.send(source);
+		out.send();
 		return 1;
 	}
 
@@ -440,57 +448,55 @@ public final class WttlCommand {
 		CommandSourceStack source = context.getSource();
 		ObjectBreakdown objects = DeepProfiler.get().breakdown(MAX_SAVED_ROWS, MAX_SAVED_ROWS);
 		if (objects == null) {
-			source.sendFailure(Component.literal("Nothing to save; no inspection has run."));
+			fail(source, "wttl.object.nothing_saved");
 			return 0;
 		}
 
 		MethodBreakdown methods = DeepProfiler.get().methodBreakdown(MAX_SAVED_ROWS);
-		String dimensionName = ChunkProfiler.get().dimensions().nameOf(objects.dimensionId());
 		Path file = ReportStore.writeAsync(
-				TextReport.render("Manual inspection", dimensionName, objects, methods),
+				TextReport.render(Messages.plain("wttl.report.file_heading.manual"), objects, methods),
 				"manual", objects.dimensionId(), objects.chunkKey());
 
-		source.sendSuccess(() -> Component.literal("Writing report to " + ReportStore.DIRECTORY_NAME
-				+ "/" + file.getFileName()).withStyle(ChatFormatting.GREEN), true);
+		new ChatReport(source).styled(ChatFormatting.GREEN, "wttl.object.saving",
+				ReportStore.DIRECTORY_NAME + "/" + file.getFileName()).broadcast();
 		return 1;
 	}
 
 	// ------------------------------------------------------------------ automatic
 
 	private static int enableAuto(CommandContext<CommandSourceStack> context, double msptMs, double share) {
-		AutoDrillDown.get().enable(msptMs, share);
 		CommandSourceStack source = context.getSource();
+		AutoDrillDown.get().enable(msptMs, share);
 
-		source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
-				"Automatic drill-down on: captures when the server averages over %.0f ms/tick "
-						+ "and one chunk holds over %.0f%% of chunk tick time.", msptMs, share * 100.0))
-				.withStyle(ChatFormatting.GREEN), true);
-
+		ChatReport out = new ChatReport(source);
+		out.styled(ChatFormatting.GREEN, "wttl.auto.enabled",
+				String.format(Locale.ROOT, "%.0f", msptMs), percent(share));
 		if (!ChunkProfiler.get().isEnabled()) {
-			source.sendSuccess(() -> Component.literal(
-					"  It has nothing to watch until chunk heat monitoring is on: /wttl chunk enable")
-					.withStyle(ChatFormatting.YELLOW), false);
+			out.raw(Component.literal("   ").append(out.text("wttl.auto.needs_heat"))
+					.withStyle(ChatFormatting.YELLOW));
 		}
+		out.broadcast();
 		return 1;
 	}
 
 	private static int disableAuto(CommandContext<CommandSourceStack> context) {
 		AutoDrillDown.get().disable();
-		context.getSource().sendSuccess(() -> Component.literal("Automatic drill-down off.")
-				.withStyle(ChatFormatting.YELLOW), true);
+		new ChatReport(context.getSource())
+				.styled(ChatFormatting.YELLOW, "wttl.auto.disabled").broadcast();
 		return 1;
 	}
 
 	private static int listCaptures(CommandContext<CommandSourceStack> context) {
+		CommandSourceStack source = context.getSource();
 		List<AutoCapture> captures = AutoDrillDown.get().captures();
 		if (captures.isEmpty()) {
-			context.getSource().sendFailure(Component.literal(
-					"Nothing captured yet. Reports also land in " + ReportStore.DIRECTORY_NAME + "/."));
+			fail(source, "wttl.auto.empty", ReportStore.DIRECTORY_NAME);
 			return 0;
 		}
-		ChatReport out = new ChatReport();
+
+		ChatReport out = new ChatReport(source);
 		WttlOutput.appendCaptureList(out, captures);
-		out.send(context.getSource());
+		out.send();
 		return captures.size();
 	}
 
@@ -500,21 +506,19 @@ public final class WttlCommand {
 		int index = IntegerArgumentType.getInteger(context, "index");
 
 		if (index > captures.size()) {
-			source.sendFailure(Component.literal(
-					"There are only " + captures.size() + " captures. List them with /wttl auto list."));
+			fail(source, "wttl.auto.out_of_range", String.valueOf(captures.size()));
 			return 0;
 		}
 
 		AutoCapture capture = captures.get(index - 1);
-		ChatReport out = new ChatReport();
-		out.line(Component.literal(String.format(Locale.ROOT,
-				"Captured automatically at %s · server averaging %.1f ms/tick",
-				capture.formattedTime(), capture.msptAtTrigger())).withStyle(ChatFormatting.GRAY));
-		WttlOutput.appendObjects(out, capture.objects(), "");
+		ChatReport out = new ChatReport(source);
+		out.styled(ChatFormatting.GRAY, "wttl.auto.show_header", capture.formattedTime(),
+				String.format(Locale.ROOT, "%.1f", capture.msptAtTrigger()));
+		WttlOutput.appendObjects(out, capture.objects(), false);
 		if (capture.methods() != null) {
 			WttlOutput.appendMethods(out, capture.methods());
 		}
-		out.send(source);
+		out.send();
 		return 1;
 	}
 }

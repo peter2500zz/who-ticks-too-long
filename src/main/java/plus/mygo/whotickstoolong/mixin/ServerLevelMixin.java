@@ -61,7 +61,7 @@ public abstract class ServerLevelMixin {
 		if (DeepProbe.isTarget(chunkKey)) {
 			// Random ticks are a batch over the whole chunk with no individual object to
 			// name, so the chunk's own origin stands in as the position.
-			DeepProbe.begin(chunkKey, TickPhase.RANDOM_TICK, "whole chunk", 0,
+			DeepProbe.begin(chunkKey, TickPhase.RANDOM_TICK, "wttl.object.whole_chunk", 0,
 					chunkPos.getMinBlockX(), 0, chunkPos.getMinBlockZ());
 		}
 	}

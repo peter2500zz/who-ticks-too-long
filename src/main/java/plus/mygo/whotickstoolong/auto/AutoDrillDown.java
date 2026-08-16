@@ -11,11 +11,14 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import net.minecraft.ChatFormatting;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
 import net.minecraft.core.SectionPos;
-import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.permissions.PermissionProviderCheck;
 import net.minecraft.world.level.ChunkPos;
 import org.jetbrains.annotations.Nullable;
+import plus.mygo.whotickstoolong.i18n.Messages;
 import plus.mygo.whotickstoolong.WhoTicksTooLong;
 import plus.mygo.whotickstoolong.profile.ChunkProfiler;
 import plus.mygo.whotickstoolong.profile.HeatReport;
@@ -65,6 +68,10 @@ public final class AutoDrillDown {
 	private static final int MAX_KEPT_CAPTURES = 8;
 	private static final int MAX_COOLDOWN_ENTRIES = 256;
 	private static final int REPORT_ROWS = 20;
+
+	/** Whoever may run the command is whoever hears about an automatic capture. */
+	private static final PermissionProviderCheck<CommandSourceStack> OPERATOR =
+			Commands.hasPermission(Commands.LEVEL_GAMEMASTERS);
 
 	private static final AutoDrillDown INSTANCE = new AutoDrillDown();
 
@@ -180,17 +187,16 @@ public final class AutoDrillDown {
 	 * <p>The whole point of automatic capture is that nobody was watching, so an incident that
 	 * only ever reaches a log file on disk is half a feature.
 	 */
-	private static void notifyOperators(MinecraftServer server, Component message) {
-		server.createCommandSourceStack().sendSuccess(() -> message, true);
-	}
-
-	private static String describe(int dimensionId, long chunkKey) {
-		int chunkX = ChunkPos.getX(chunkKey);
-		int chunkZ = ChunkPos.getZ(chunkKey);
-		return String.format(Locale.ROOT, "[%d, %d] @ %d,%d in %s",
-				chunkX, chunkZ,
-				SectionPos.sectionToBlockCoord(chunkX), SectionPos.sectionToBlockCoord(chunkZ),
-				ChunkProfiler.get().dimensions().nameOf(dimensionId));
+	/**
+	 * Sent individually rather than broadcast, because each operator reads it in their own
+	 * language. The permission check is the same one that gates the command itself.
+	 */
+	private static void notifyOperators(MinecraftServer server, String key, Object... args) {
+		server.getPlayerList().getPlayers().stream()
+				.filter(player -> OPERATOR.test(player.createCommandSourceStack()))
+				.forEach(player -> player.sendSystemMessage(
+						Messages.of(player, key, args).withStyle(ChatFormatting.GOLD)));
+		WhoTicksTooLong.LOGGER.warn(Messages.plain(key, args));
 	}
 
 	private void trigger(MinecraftServer server, HeatReport.ChunkHeat suspect,
@@ -214,10 +220,14 @@ public final class AutoDrillDown {
 				String.format(Locale.ROOT, "%.1f", mspt), suspect.chunkKey(),
 				Math.round(share * 100.0), CAPTURE_DURATION.toSeconds());
 
-		notifyOperators(server, Component.literal(String.format(Locale.ROOT,
-				"Server behind at %.1f ms/tick. Chunk %s holds %.0f%% of chunk tick time. Capturing for %ds.",
-				mspt, describe(suspect.dimensionId(), suspect.chunkKey()), share * 100.0,
-				CAPTURE_DURATION.toSeconds())).withStyle(ChatFormatting.GOLD));
+		notifyOperators(server, "wttl.auto.triggered",
+				String.format(Locale.ROOT, "%.1f", mspt),
+				ChunkPos.getX(suspect.chunkKey()), ChunkPos.getZ(suspect.chunkKey()),
+				SectionPos.sectionToBlockCoord(ChunkPos.getX(suspect.chunkKey())),
+				SectionPos.sectionToBlockCoord(ChunkPos.getZ(suspect.chunkKey())),
+				ChunkProfiler.get().dimensions().nameOf(suspect.dimensionId()),
+				String.format(Locale.ROOT, "%.0f%%", share * 100.0),
+				String.valueOf(CAPTURE_DURATION.toSeconds()));
 	}
 
 	private void harvest(MinecraftServer server) {
@@ -233,12 +243,12 @@ public final class AutoDrillDown {
 		}
 		MethodBreakdown methods = DeepProfiler.get().methodBreakdown(REPORT_ROWS);
 
-		String dimensionName = ChunkProfiler.get().dimensions().nameOf(captured.dimensionId());
-		String heading = String.format(Locale.ROOT,
-				"Automatic capture at %s - server averaging %.1f ms/tick, chunk held %.1f%% of chunk tick time",
-				captured.triggeredAt().format(AutoCapture.TIMESTAMP), captured.mspt(), captured.share() * 100.0);
+		String heading = Messages.plain("wttl.report.file_heading.auto",
+				captured.triggeredAt().format(AutoCapture.TIMESTAMP),
+				String.format(Locale.ROOT, "%.1f", captured.mspt()),
+				String.format(Locale.ROOT, "%.1f%%", captured.share() * 100.0));
 		Path file = ReportStore.writeAsync(
-				TextReport.render(heading, dimensionName, objects, methods),
+				TextReport.render(heading, objects, methods),
 				"auto", captured.dimensionId(), captured.chunkKey());
 
 		this.captures.addFirst(new AutoCapture(captured.triggeredAt(), captured.mspt(), captured.share(),
@@ -247,11 +257,14 @@ public final class AutoDrillDown {
 			this.captures.removeLast();
 		}
 
-		String worst = objects.types().isEmpty() ? "nothing identifiable" : objects.types().get(0).type();
-		notifyOperators(server, Component.literal(String.format(Locale.ROOT,
-				"Capture finished. Chunk %s cost %.3f ms per tick, mostly %s. Read it with /wttl auto show 1",
-				describe(captured.dimensionId(), captured.chunkKey()), objects.millisPerTick(), worst))
-				.withStyle(ChatFormatting.GOLD));
+		String worst = objects.types().isEmpty()
+				? Messages.plain("wttl.auto.captured.unknown")
+				: objects.types().get(0).type();
+		notifyOperators(server, "wttl.auto.captured",
+				ChunkPos.getX(captured.chunkKey()), ChunkPos.getZ(captured.chunkKey()),
+				SectionPos.sectionToBlockCoord(ChunkPos.getX(captured.chunkKey())),
+				SectionPos.sectionToBlockCoord(ChunkPos.getZ(captured.chunkKey())),
+				String.format(Locale.ROOT, "%.3f", objects.millisPerTick()), worst);
 	}
 
 	private boolean isCoolingDown(int dimensionId, long chunkKey, long now) {

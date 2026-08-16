@@ -47,7 +47,7 @@ public final class DeepProbe {
 	public static void begin(long chunkKey, TickPhase phase, String type, int objectId, int x, int y, int z) {
 		ObjectTickEvent event = new ObjectTickEvent();
 		event.chunkKey = chunkKey;
-		event.kind = phase.displayName();
+		event.kind = phase.translationKey();
 		event.objectType = type;
 		event.objectId = objectId;
 		event.x = x;

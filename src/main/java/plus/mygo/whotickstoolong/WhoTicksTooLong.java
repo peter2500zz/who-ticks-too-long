@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import plus.mygo.whotickstoolong.auto.AutoDrillDown;
 import plus.mygo.whotickstoolong.command.WttlCommand;
+import plus.mygo.whotickstoolong.i18n.ServerLanguage;
 import plus.mygo.whotickstoolong.profile.ChunkProfiler;
 import plus.mygo.whotickstoolong.profile.deep.DeepProfiler;
 
@@ -22,6 +23,9 @@ public final class WhoTicksTooLong implements ModInitializer {
 
 	@Override
 	public void onInitialize() {
+		// Before anything can produce text: the tables are read once and then only read from.
+		ServerLanguage.load();
+
 		CommandRegistrationCallback.EVENT.register(
 				(dispatcher, registryAccess, environment) -> WttlCommand.register(dispatcher));
 

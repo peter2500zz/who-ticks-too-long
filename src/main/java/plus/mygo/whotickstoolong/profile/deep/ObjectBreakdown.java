@@ -83,7 +83,7 @@ public record ObjectBreakdown(
 
 		/** Movable objects are reported at their most recent position, not a fixed one. */
 		public boolean isMovable() {
-			return TickPhase.ENTITY.displayName().equals(this.kind);
+			return TickPhase.ENTITY.translationKey().equals(this.kind);
 		}
 	}
 }

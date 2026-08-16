@@ -21,25 +21,25 @@ import jdk.jfr.FlightRecorder;
 public enum SamplerFlavour {
 
 	/** Unbiased, Linux only, still an experimental JDK feature. */
-	CPU_TIME("jdk.CPUTimeSample", "CPU time (unbiased)"),
+	CPU_TIME("jdk.CPUTimeSample", "wttl.sampler.cpu_time"),
 
 	/** Works everywhere, but samples land on safepoints rather than where time is truly spent. */
-	EXECUTION("jdk.ExecutionSample", "execution (safepoint biased)");
+	EXECUTION("jdk.ExecutionSample", "wttl.sampler.execution");
 
 	private final String eventName;
-	private final String displayName;
+	private final String translationKey;
 
-	SamplerFlavour(String eventName, String displayName) {
+	SamplerFlavour(String eventName, String translationKey) {
 		this.eventName = eventName;
-		this.displayName = displayName;
+		this.translationKey = translationKey;
 	}
 
 	public String eventName() {
 		return this.eventName;
 	}
 
-	public String displayName() {
-		return this.displayName;
+	public String translationKey() {
+		return this.translationKey;
 	}
 
 	public boolean isBiased() {

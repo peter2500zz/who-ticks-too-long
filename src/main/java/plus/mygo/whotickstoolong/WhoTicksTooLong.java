@@ -6,6 +6,7 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import plus.mygo.whotickstoolong.auto.AutoDrillDown;
 import plus.mygo.whotickstoolong.command.WttlCommand;
 import plus.mygo.whotickstoolong.profile.ChunkProfiler;
 import plus.mygo.whotickstoolong.profile.deep.DeepProfiler;
@@ -37,8 +38,12 @@ public final class WhoTicksTooLong implements ModInitializer {
 			deep.onLevelTickStart(dimensionId);
 		});
 
+		// Evaluated at the end of a tick, when that tick's cost is already known.
+		ServerTickEvents.END_SERVER_TICK.register(server -> AutoDrillDown.get().onServerTickEnd(server));
+
 		// A reloading integrated server must never leave a sampler thread or recording behind.
 		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
+			AutoDrillDown.get().disable();
 			DeepProfiler.get().shutdown();
 			ChunkProfiler.get().shutdown();
 		});

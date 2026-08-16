@@ -4,6 +4,7 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -24,7 +25,9 @@ import plus.mygo.whotickstoolong.profile.HeatReport;
 import plus.mygo.whotickstoolong.profile.HeatWindow;
 import plus.mygo.whotickstoolong.profile.SamplerStats;
 import plus.mygo.whotickstoolong.profile.deep.DeepProfiler;
+import plus.mygo.whotickstoolong.profile.deep.MethodBreakdown;
 import plus.mygo.whotickstoolong.profile.deep.ObjectBreakdown;
+import plus.mygo.whotickstoolong.profile.deep.SamplerFlavour;
 
 /**
  * The {@code /wttl} command tree: switch a level of monitoring on or off, ask what the
@@ -57,21 +60,31 @@ public final class WttlCommand {
 						.then(Commands.literal("enable")
 								.then(Commands.argument("chunkX", IntegerArgumentType.integer())
 										.then(Commands.argument("chunkZ", IntegerArgumentType.integer())
-												.executes(context -> startDeep(context, DeepProfiler.DEFAULT_DURATION, null))
+												.executes(context -> startDeep(context, DeepProfiler.DEFAULT_DURATION, null, false))
 												.then(Commands.literal("until-stopped")
-														.executes(context -> startDeep(context, null, null)))
+														.executes(context -> startDeep(context, null, null, false))
+														.then(Commands.literal("methods")
+																.executes(context -> startDeep(context, null, null, true))))
 												.then(Commands.argument("seconds",
 																IntegerArgumentType.integer(1, DeepProfiler.MAX_DURATION_SECONDS))
-														.executes(context -> startDeep(context, seconds(context), null))
+														.executes(context -> startDeep(context, seconds(context), null, false))
+														.then(Commands.literal("methods")
+																.executes(context -> startDeep(context, seconds(context), null, true)))
 														.then(Commands.argument("dimension", DimensionArgument.dimension())
-																.executes(context -> startDeep(context, seconds(context),
-																		DimensionArgument.getDimension(context, "dimension"))))))))
+																.executes(context -> startDeep(context, seconds(context), dimension(context), false))
+																.then(Commands.literal("methods")
+																		.executes(context -> startDeep(context, seconds(context),
+																				dimension(context), true))))))))
 						.then(Commands.literal("disable")
 								.executes(WttlCommand::stopDeep))
 						.then(Commands.literal("report")
 								.executes(context -> deepReport(context, DEFAULT_COUNT))
 								.then(Commands.argument("count", IntegerArgumentType.integer(1, MAX_COUNT))
-										.executes(context -> deepReport(context, count(context))))))
+										.executes(context -> deepReport(context, count(context)))))
+						.then(Commands.literal("methods")
+								.executes(context -> methodReport(context, DEFAULT_COUNT))
+								.then(Commands.argument("count", IntegerArgumentType.integer(1, MAX_COUNT))
+										.executes(context -> methodReport(context, count(context))))))
 				.then(Commands.literal("top")
 						.executes(context -> top(context, DEFAULT_COUNT, DEFAULT_WINDOW, 1))
 						.then(Commands.argument("count", IntegerArgumentType.integer(1, MAX_COUNT))
@@ -98,9 +111,14 @@ public final class WttlCommand {
 
 	// -------------------------------------------------------------- deep inspection
 
+	private static ServerLevel dimension(CommandContext<CommandSourceStack> context)
+			throws CommandSyntaxException {
+		return DimensionArgument.getDimension(context, "dimension");
+	}
+
 	/** @param duration null means run until stopped by hand */
 	private static int startDeep(CommandContext<CommandSourceStack> context,
-			@Nullable Duration duration, @Nullable ServerLevel explicitLevel) {
+			@Nullable Duration duration, @Nullable ServerLevel explicitLevel, boolean withMethods) {
 		CommandSourceStack source = context.getSource();
 		ServerLevel level = explicitLevel != null ? explicitLevel : source.getLevel();
 		int chunkX = IntegerArgumentType.getInteger(context, "chunkX");
@@ -108,8 +126,9 @@ public final class WttlCommand {
 		long chunkKey = ChunkPos.pack(chunkX, chunkZ);
 		int dimensionId = ChunkProfiler.get().dimensions().idOf(level.dimension());
 
+		SamplerFlavour flavour;
 		try {
-			DeepProfiler.get().start(dimensionId, chunkKey, duration);
+			flavour = DeepProfiler.get().start(dimensionId, chunkKey, duration, withMethods);
 		} catch (IllegalStateException | UnsupportedOperationException e) {
 			source.sendFailure(Component.literal(e.getMessage()));
 			return 0;
@@ -120,7 +139,78 @@ public final class WttlCommand {
 				chunkX, chunkZ, level.dimension().identifier(),
 				duration == null ? "until stopped" : "for " + duration.toSeconds() + "s"))
 				.withStyle(ChatFormatting.GREEN), true);
+
+		if (flavour != null) {
+			source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
+					"  Sampling methods with %s. Read them with /wttl object methods.",
+					flavour.displayName())).withStyle(ChatFormatting.DARK_GRAY), false);
+		}
 		return 1;
+	}
+
+	private static int methodReport(CommandContext<CommandSourceStack> context, int count) {
+		CommandSourceStack source = context.getSource();
+		MethodBreakdown breakdown = DeepProfiler.get().methodBreakdown(count);
+
+		if (breakdown == null) {
+			source.sendFailure(Component.literal("No method samples. Method sampling needs the object "
+					+ "tick windows, so start it with /wttl object enable <x> <z> <seconds> methods."));
+			return 0;
+		}
+		if (breakdown.samplesInChunk() == 0) {
+			source.sendFailure(Component.literal(String.format(Locale.ROOT,
+					"No stack samples landed inside the chunk (%,d were taken on the server thread). "
+							+ "Either the chunk is a very small slice of the tick, or sampling produced nothing.",
+					breakdown.samplesOnThread())));
+			return 0;
+		}
+
+		source.sendSuccess(() -> header("Methods inside the inspected chunk"), false);
+		source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
+				"  %s — %,d of %,d server-thread samples fell inside the chunk (%s)",
+				breakdown.sampler().displayName(), breakdown.samplesInChunk(), breakdown.samplesOnThread(),
+				formatPercent(breakdown.chunkShareOfThread() * 100.0)))
+				.withStyle(ChatFormatting.DARK_GRAY), false);
+
+		if (breakdown.biased()) {
+			source.sendSuccess(() -> Component.literal(
+					"  This sampler lands on safepoints, so treat hot spots as indicative, not exact.")
+					.withStyle(ChatFormatting.YELLOW), false);
+		}
+		if (breakdown.lostSamples() > 0) {
+			source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
+					"  The JVM dropped %,d samples.", breakdown.lostSamples()))
+					.withStyle(ChatFormatting.YELLOW), false);
+		}
+		if (breakdown.bufferCapReached()) {
+			source.sendSuccess(() -> Component.literal(
+					"  Sample buffers filled, so this covers only the earlier part of the inspection.")
+					.withStyle(ChatFormatting.YELLOW), false);
+		}
+
+		int rank = 1;
+		for (MethodBreakdown.MethodRow row : breakdown.methods()) {
+			int shown = rank++;
+			source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT, "  %2d. %5.1f%%  ",
+					shown, row.shareOf(breakdown) * 100.0))
+					.withStyle(ChatFormatting.GRAY)
+					.append(Component.literal(row.method()).withStyle(ChatFormatting.WHITE))
+					.append(Component.literal("  during " + row.dominantType())
+							.withStyle(ChatFormatting.DARK_GRAY)), false);
+
+			String path = callPath(row.representativeStack());
+			if (!path.isEmpty()) {
+				source.sendSuccess(() -> Component.literal("        via " + path)
+						.withStyle(ChatFormatting.DARK_GRAY), false);
+			}
+		}
+		return 1;
+	}
+
+	/** Renders the callers of a sampled method, nearest first, short enough for one chat line. */
+	private static String callPath(List<String> stack) {
+		int depth = Math.min(stack.size(), 5);
+		return depth <= 1 ? "" : String.join(" <- ", stack.subList(1, depth));
 	}
 
 	private static int stopDeep(CommandContext<CommandSourceStack> context) {

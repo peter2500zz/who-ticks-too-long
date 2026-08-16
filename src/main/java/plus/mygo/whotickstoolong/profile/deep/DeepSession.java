@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import jdk.jfr.consumer.RecordedEvent;
 import jdk.jfr.consumer.RecordingStream;
+import org.jetbrains.annotations.Nullable;
 import plus.mygo.whotickstoolong.WhoTicksTooLong;
 import plus.mygo.whotickstoolong.profile.TickPhase;
 
@@ -26,11 +27,15 @@ public final class DeepSession implements AutoCloseable {
 
 	private static final int MAX_TRACKED_INSTANCES = 4096;
 
+	/** Reports samples the JVM had to drop, so a thin report can be explained rather than guessed at. */
+	private static final String LOST_SAMPLES_EVENT = "jdk.CPUTimeSamplesLost";
+
 	private final int dimensionId;
 	private final long chunkKey;
 	private final long startedNanos;
 	private final long expiresAtNanos;
 	private final RecordingStream stream;
+	private final @Nullable MethodSampleCollector collector;
 
 	private final Map<TypeKey, TypeAccumulator> types = new HashMap<>();
 	private final Map<InstanceKey, InstanceAccumulator> instances = new HashMap<>();
@@ -42,9 +47,11 @@ public final class DeepSession implements AutoCloseable {
 
 	/**
 	 * @param duration how long to run, or null to run until stopped by hand
+	 * @param flavour  the stack sampler to run alongside, or null for object costs only
 	 * @throws java.lang.UnsupportedOperationException if Flight Recorder is unavailable
 	 */
-	public DeepSession(int dimensionId, long chunkKey, Duration duration) {
+	public DeepSession(int dimensionId, long chunkKey, @Nullable Duration duration,
+			@Nullable SamplerFlavour flavour, int sampleRateHz) {
 		this.dimensionId = dimensionId;
 		this.chunkKey = chunkKey;
 		this.startedNanos = System.nanoTime();
@@ -55,6 +62,23 @@ public final class DeepSession implements AutoCloseable {
 		// of them: a cheap object tick is measured in microseconds.
 		this.stream.enable(ObjectTickEvent.NAME).withoutThreshold();
 		this.stream.onEvent(ObjectTickEvent.NAME, this::onEvent);
+
+		if (flavour == null) {
+			this.collector = null;
+		} else {
+			// Constructed on the server thread, whose name is how samples get filtered down
+			// to the one thread that ticks chunks.
+			this.collector = new MethodSampleCollector(flavour, Thread.currentThread().getName());
+			flavour.configureRate(this.stream.enable(flavour.eventName()), sampleRateHz);
+			this.stream.onEvent(flavour.eventName(), this.collector::recordSample);
+
+			if (flavour == SamplerFlavour.CPU_TIME) {
+				this.stream.enable(LOST_SAMPLES_EVENT);
+				this.stream.onEvent(LOST_SAMPLES_EVENT,
+						event -> this.collector.recordLost(event.getInt("lostSamples")));
+			}
+		}
+
 		this.stream.startAsync();
 	}
 
@@ -71,6 +95,12 @@ public final class DeepSession implements AutoCloseable {
 		int y = event.getInt("y");
 		int z = event.getInt("z");
 		long nanos = event.getDuration().toNanos();
+
+		// The window this object occupied is what lets a stack sample be tied back to it.
+		MethodSampleCollector methods = this.collector;
+		if (methods != null) {
+			methods.recordWindow(event, type);
+		}
 
 		synchronized (this) {
 			this.observedEvents++;
@@ -114,6 +144,12 @@ public final class DeepSession implements AutoCloseable {
 
 	public long chunkKey() {
 		return this.chunkKey;
+	}
+
+	/** @return null when this inspection was started without method sampling */
+	public @Nullable MethodBreakdown methodBreakdown(int limit) {
+		MethodSampleCollector methods = this.collector;
+		return methods == null ? null : methods.breakdown(limit);
 	}
 
 	public synchronized ObjectBreakdown breakdown(int typeLimit, int instanceLimit) {

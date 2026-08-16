@@ -19,6 +19,12 @@ public final class DeepProfiler {
 	public static final Duration DEFAULT_DURATION = Duration.ofSeconds(30);
 	public static final int MAX_DURATION_SECONDS = 600;
 
+	/**
+	 * Requested stack samples per second. Both samplers treat this as a ceiling and the CPU
+	 * time one in particular delivers well under it, so reports quote counts, never a rate.
+	 */
+	public static final int METHOD_SAMPLE_RATE_HZ = 1000;
+
 	/** Long enough for JFR to hand over events emitted just before the probe was disarmed. */
 	private static final long DRAIN_NANOS = Duration.ofSeconds(3).toNanos();
 
@@ -26,6 +32,7 @@ public final class DeepProfiler {
 
 	private @Nullable DeepSession session;
 	private @Nullable ObjectBreakdown finished;
+	private @Nullable MethodBreakdown finishedMethods;
 	private boolean draining;
 	private long drainUntilNanos;
 
@@ -45,18 +52,23 @@ public final class DeepProfiler {
 	}
 
 	/**
-	 * @param duration how long to inspect, or null to run until stopped by hand
+	 * @param duration    how long to inspect, or null to run until stopped by hand
+	 * @param withMethods also sample stacks, which needs the object tick windows this
+	 *                    inspection produces and so cannot be turned on independently
+	 * @return the sampler chosen for method sampling, or null if it was not requested
 	 * @throws IllegalStateException if an inspection is already running
 	 * @throws UnsupportedOperationException if Flight Recorder is unavailable on this JVM
 	 */
-	public synchronized void start(int dimensionId, long chunkKey, @Nullable Duration duration) {
+	public synchronized @Nullable SamplerFlavour start(int dimensionId, long chunkKey,
+			@Nullable Duration duration, boolean withMethods) {
 		if (this.session != null) {
 			throw new IllegalStateException("an inspection is already running");
 		}
 
+		SamplerFlavour flavour = withMethods ? SamplerFlavour.detect() : null;
 		DeepSession fresh;
 		try {
-			fresh = new DeepSession(dimensionId, chunkKey, duration);
+			fresh = new DeepSession(dimensionId, chunkKey, duration, flavour, METHOD_SAMPLE_RATE_HZ);
 		} catch (RuntimeException e) {
 			throw new UnsupportedOperationException(
 					"Flight Recorder is not available on this JVM: " + e.getMessage(), e);
@@ -64,12 +76,15 @@ public final class DeepProfiler {
 
 		this.session = fresh;
 		this.finished = null;
+		this.finishedMethods = null;
 		this.draining = false;
 		DeepProbe.arm(dimensionId, chunkKey);
 
-		WhoTicksTooLong.LOGGER.info("Deep inspection armed on chunk key {} in dimension {}{}",
+		WhoTicksTooLong.LOGGER.info("Deep inspection armed on chunk key {} in dimension {}{}{}",
 				chunkKey, dimensionId,
-				duration == null ? " until stopped" : " for " + duration.toSeconds() + "s");
+				duration == null ? " until stopped" : " for " + duration.toSeconds() + "s",
+				flavour == null ? "" : ", sampling methods with " + flavour.eventName());
+		return flavour;
 	}
 
 	/** Stops immediately, keeping whatever has been gathered so far. */
@@ -81,6 +96,7 @@ public final class DeepProfiler {
 
 		DeepProbe.disarm();
 		ObjectBreakdown breakdown = current.breakdown(Integer.MAX_VALUE, Integer.MAX_VALUE);
+		this.finishedMethods = current.methodBreakdown(Integer.MAX_VALUE);
 		current.close();
 
 		this.session = null;
@@ -99,6 +115,15 @@ public final class DeepProfiler {
 		}
 		// The finished one is stored complete, so it has to be trimmed on the way out.
 		return this.finished == null ? null : this.finished.limited(typeLimit, instanceLimit);
+	}
+
+	/** @return null when the inspection ran without method sampling, or none has run */
+	public synchronized @Nullable MethodBreakdown methodBreakdown(int limit) {
+		DeepSession current = this.session;
+		if (current != null) {
+			return current.methodBreakdown(limit);
+		}
+		return this.finishedMethods == null ? null : this.finishedMethods.limited(limit);
 	}
 
 	/**
@@ -127,6 +152,7 @@ public final class DeepProfiler {
 
 		if (this.draining && now >= this.drainUntilNanos) {
 			this.finished = current.breakdown(Integer.MAX_VALUE, Integer.MAX_VALUE);
+			this.finishedMethods = current.methodBreakdown(Integer.MAX_VALUE);
 			current.close();
 			this.session = null;
 			this.draining = false;
@@ -140,5 +166,6 @@ public final class DeepProfiler {
 			this.stop();
 		}
 		this.finished = null;
+		this.finishedMethods = null;
 	}
 }

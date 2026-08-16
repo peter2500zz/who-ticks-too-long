@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
@@ -20,14 +21,18 @@ import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.commands.arguments.DimensionArgument;
 import net.minecraft.core.SectionPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
 import org.jetbrains.annotations.Nullable;
+import plus.mygo.whotickstoolong.WhoTicksTooLong;
 import plus.mygo.whotickstoolong.auto.AutoCapture;
 import plus.mygo.whotickstoolong.auto.AutoDrillDown;
 import plus.mygo.whotickstoolong.profile.ChunkProfiler;
 import plus.mygo.whotickstoolong.profile.HeatReport;
 import plus.mygo.whotickstoolong.profile.SamplerStats;
+import plus.mygo.whotickstoolong.profile.deep.DeepCompletion;
 import plus.mygo.whotickstoolong.profile.deep.DeepProfiler;
 import plus.mygo.whotickstoolong.profile.deep.MethodBreakdown;
 import plus.mygo.whotickstoolong.profile.deep.ObjectBreakdown;
@@ -299,7 +304,8 @@ public final class WttlCommand {
 
 		SamplerFlavour flavour;
 		try {
-			flavour = DeepProfiler.get().start(dimensionId, chunkKey, duration, withMethods);
+			flavour = DeepProfiler.get().start(dimensionId, chunkKey, duration, withMethods,
+					reportBackTo(source));
 		} catch (IllegalStateException | UnsupportedOperationException e) {
 			source.sendFailure(Component.literal(e.getMessage()));
 			return 0;
@@ -320,6 +326,47 @@ public final class WttlCommand {
 					flavour.displayName())).withStyle(ChatFormatting.DARK_GRAY), false);
 		}
 		return 1;
+	}
+
+	/**
+	 * Sends the results back to whoever started the inspection, once it ends.
+	 *
+	 * <p>A timed inspection outlives the command that began it, and the player may well have
+	 * left in the meantime, so the target is resolved by id at the moment it finishes rather
+	 * than held onto. Holding the original command source would also keep a level and an
+	 * entity reachable for the whole run, which a profiler has no business doing.
+	 */
+	private static DeepCompletion reportBackTo(CommandSourceStack source) {
+		MinecraftServer server = source.getServer();
+		ServerPlayer starter = source.getPlayer();
+		UUID starterId = starter == null ? null : starter.getUUID();
+
+		return (objects, methods) -> {
+			CommandSourceStack target = resolveReportTarget(server, starterId);
+			if (target == null) {
+				WhoTicksTooLong.LOGGER.info(
+						"Inspection finished but whoever started it has left; it is still readable "
+								+ "with /wttl object report.");
+				return;
+			}
+
+			target.sendSuccess(() -> Component.literal("Inspection finished.")
+					.withStyle(ChatFormatting.GREEN), false);
+			WttlOutput.sendObjects(target, objects, "");
+			if (methods != null) {
+				WttlOutput.sendMethods(target, methods);
+			}
+		};
+	}
+
+	/** @return null when the player who started the inspection is no longer online */
+	private static @Nullable CommandSourceStack resolveReportTarget(
+			MinecraftServer server, @Nullable UUID starterId) {
+		if (starterId == null) {
+			return server.createCommandSourceStack();
+		}
+		ServerPlayer player = server.getPlayerList().getPlayer(starterId);
+		return player == null ? null : player.createCommandSourceStack();
 	}
 
 	private static int stopDeep(CommandContext<CommandSourceStack> context) {

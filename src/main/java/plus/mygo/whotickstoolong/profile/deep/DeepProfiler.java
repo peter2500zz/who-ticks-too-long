@@ -30,9 +30,13 @@ public final class DeepProfiler {
 
 	private static final DeepProfiler INSTANCE = new DeepProfiler();
 
+	/** Rows handed to a completion listener, sized for chat rather than for a file. */
+	private static final int REPORT_BACK_ROWS = 10;
+
 	private @Nullable DeepSession session;
 	private @Nullable ObjectBreakdown finished;
 	private @Nullable MethodBreakdown finishedMethods;
+	private @Nullable DeepCompletion completion;
 	private boolean draining;
 	private long drainUntilNanos;
 
@@ -55,12 +59,13 @@ public final class DeepProfiler {
 	 * @param duration    how long to inspect, or null to run until stopped by hand
 	 * @param withMethods also sample stacks, which needs the object tick windows this
 	 *                    inspection produces and so cannot be turned on independently
+	 * @param completion  notified once results are final, or null to stay quiet
 	 * @return the sampler chosen for method sampling, or null if it was not requested
 	 * @throws IllegalStateException if an inspection is already running
 	 * @throws UnsupportedOperationException if Flight Recorder is unavailable on this JVM
 	 */
 	public synchronized @Nullable SamplerFlavour start(int dimensionId, long chunkKey,
-			@Nullable Duration duration, boolean withMethods) {
+			@Nullable Duration duration, boolean withMethods, @Nullable DeepCompletion completion) {
 		if (this.session != null) {
 			throw new IllegalStateException("an inspection is already running");
 		}
@@ -77,6 +82,7 @@ public final class DeepProfiler {
 		this.session = fresh;
 		this.finished = null;
 		this.finishedMethods = null;
+		this.completion = completion;
 		this.draining = false;
 		DeepProbe.arm(dimensionId, chunkKey);
 
@@ -104,6 +110,7 @@ public final class DeepProfiler {
 		this.finished = breakdown;
 
 		WhoTicksTooLong.LOGGER.info("Deep inspection stopped after {} object ticks", breakdown.observedEvents());
+		this.notifyCompletion();
 		return breakdown;
 	}
 
@@ -158,10 +165,35 @@ public final class DeepProfiler {
 			this.draining = false;
 			WhoTicksTooLong.LOGGER.info("Deep inspection finished: {} object ticks recorded",
 					this.finished.observedEvents());
+			this.notifyCompletion();
+		}
+	}
+
+	/**
+	 * Hands the finished results to whoever asked for them, at most once per inspection.
+	 *
+	 * <p>A listener that throws must not leave the profiler wedged or take a server tick down
+	 * with it, so failures are logged and swallowed.
+	 */
+	private void notifyCompletion() {
+		DeepCompletion listener = this.completion;
+		this.completion = null;
+		if (listener == null || this.finished == null) {
+			return;
+		}
+
+		try {
+			listener.onFinished(
+					this.finished.limited(REPORT_BACK_ROWS, REPORT_BACK_ROWS),
+					this.finishedMethods == null ? null : this.finishedMethods.limited(REPORT_BACK_ROWS));
+		} catch (RuntimeException e) {
+			WhoTicksTooLong.LOGGER.warn("Reporting a finished inspection failed", e);
 		}
 	}
 
 	public synchronized void shutdown() {
+		// Nothing to report into a server that is going away.
+		this.completion = null;
 		if (this.session != null) {
 			this.stop();
 		}

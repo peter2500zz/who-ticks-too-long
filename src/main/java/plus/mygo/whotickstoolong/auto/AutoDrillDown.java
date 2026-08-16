@@ -151,7 +151,9 @@ public final class AutoDrillDown {
 
 	private void trigger(HeatReport.ChunkHeat suspect, double mspt, double share, long now) {
 		try {
-			DeepProfiler.get().start(suspect.dimensionId(), suspect.chunkKey(), CAPTURE_DURATION, true);
+			// No completion listener: an automatic capture writes itself to disk and logs a
+			// line, and there is by definition nobody waiting on a reply.
+			DeepProfiler.get().start(suspect.dimensionId(), suspect.chunkKey(), CAPTURE_DURATION, true, null);
 		} catch (IllegalStateException | UnsupportedOperationException e) {
 			WhoTicksTooLong.LOGGER.warn("Automatic drill-down could not start an inspection", e);
 			return;

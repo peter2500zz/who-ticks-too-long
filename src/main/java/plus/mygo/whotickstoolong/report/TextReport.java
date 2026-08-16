@@ -66,7 +66,7 @@ public final class TextReport {
 					row.isMovable() ? "last at " : "", row.x(), row.y(), row.z(), row.ticks()));
 		}
 		if (objects.instanceCapReached()) {
-			out.append("  (distinct-object tracking hit its bound; type totals above are still complete)")
+			out.append("  Distinct-object tracking hit its bound; type totals above are still complete.")
 					.append(System.lineSeparator());
 		}
 

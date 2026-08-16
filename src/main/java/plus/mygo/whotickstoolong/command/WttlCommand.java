@@ -211,49 +211,53 @@ public final class WttlCommand {
 		CommandSourceStack source = context.getSource();
 		SamplerStats stats = ChunkProfiler.get().stats();
 
-		source.sendSuccess(() -> WttlOutput.header("Who Ticks Too Long"), false);
+		ChatReport out = new ChatReport();
+		out.line(WttlOutput.header("Who Ticks Too Long"));
 
 		// The number an operator needs before choosing an automatic drill-down threshold.
 		double msptNow = source.getServer().getAverageTickTimeNanos() / 1e6;
-		source.sendSuccess(() -> WttlOutput.field("server", Component.literal(String.format(Locale.ROOT,
-				"%.2f ms/tick averaged over the last 100 ticks", msptNow))), false);
+		out.line(WttlOutput.field("server", Component.literal(String.format(Locale.ROOT,
+				"%.2f ms/tick averaged over the last 100 ticks", msptNow))));
 
 		if (stats == null) {
-			source.sendSuccess(() -> WttlOutput.field("chunk heat",
-					Component.literal("off").withStyle(ChatFormatting.GRAY)), false);
-			source.sendSuccess(() -> Component.literal("  Nothing is instrumented and no memory is held.")
-					.withStyle(ChatFormatting.DARK_GRAY), false);
+			out.line(WttlOutput.field("chunk heat",
+					Component.literal("off").withStyle(ChatFormatting.GRAY)));
+			out.line(Component.literal("  Nothing is instrumented and no memory is held.")
+					.withStyle(ChatFormatting.DARK_GRAY));
 		} else {
-			source.sendSuccess(() -> WttlOutput.field("chunk heat", Component.literal(String.format(Locale.ROOT,
+			out.line(WttlOutput.field("chunk heat", Component.literal(String.format(Locale.ROOT,
 					"on - %d Hz requested, %.0f Hz achieved", stats.requestedRateHz(), stats.achievedRateHz()))
-					.withStyle(ChatFormatting.GREEN)), false);
-			source.sendSuccess(() -> WttlOutput.field("samples", Component.literal(String.format(Locale.ROOT,
-					"%,d taken, %,d discarded (%.2f%%)",
-					stats.samplesTaken(), stats.samplesDiscarded(), stats.discardRate() * 100.0))), false);
-			source.sendSuccess(() -> WttlOutput.field("sample buffer", Component.literal(
-					String.format(Locale.ROOT, "%,d KiB", stats.ringBytes() / 1024L))), false);
-			source.sendSuccess(() -> WttlOutput.field("sampler thread", Component.literal(
-					stats.samplerPercentOfOneCore() < 0.0
-							? "CPU time unavailable on this JVM"
-							: String.format(Locale.ROOT, "%.2f s CPU - %s of one core",
-									stats.samplerCpuNanos() / 1e9,
-									WttlOutput.formatPercent(stats.samplerPercentOfOneCore())))), false);
-			source.sendSuccess(() -> WttlOutput.field("hot path", Component.literal(String.format(Locale.ROOT,
-					"%,d objects instrumented - about %.1f us total, %s of server wall time (estimate)",
-					stats.instrumentedObjects(), stats.estimatedHotPathNanos() / 1e3,
-					WttlOutput.formatPercent(stats.hotPathPercentOfWall())))), false);
+					.withStyle(ChatFormatting.GREEN)));
+			out.line(WttlOutput.detail(String.format(Locale.ROOT, "%,d samples · %,d discarded · %s",
+					stats.samplesTaken(), stats.samplesDiscarded(),
+					WttlOutput.formatPercent(stats.discardRate() * 100.0))));
+			out.line(WttlOutput.detail(String.format(Locale.ROOT, "buffer %,d KiB",
+					stats.ringBytes() / 1024L)));
+			out.line(WttlOutput.field("sampler thread", stats.samplerPercentOfOneCore() < 0.0
+					? "CPU time unavailable on this JVM"
+					: String.format(Locale.ROOT, "%.2fs CPU · %s of one core",
+							stats.samplerCpuNanos() / 1e9,
+							WttlOutput.formatPercent(stats.samplerPercentOfOneCore()))));
+			out.line(WttlOutput.field("hot path", Component.literal(
+					WttlOutput.formatPercent(stats.hotPathPercentOfWall()) + " of wall time")
+					.withStyle(ChatFormatting.GREEN)));
+			out.line(WttlOutput.detail(String.format(Locale.ROOT,
+					"%,d objects instrumented · about %.1fus total · estimated",
+					stats.instrumentedObjects(), stats.estimatedHotPathNanos() / 1e3)));
 		}
 
-		source.sendSuccess(() -> WttlOutput.field("deep inspection", Component.literal(
-				DeepProfiler.get().isRunning() ? "running" : "idle")), false);
+		out.line(WttlOutput.field("deep inspection", Component.literal(
+				DeepProfiler.get().isRunning() ? "running" : "idle")));
 
 		AutoDrillDown auto = AutoDrillDown.get();
-		source.sendSuccess(() -> WttlOutput.field("automatic drill-down", Component.literal(auto.isEnabled()
+		out.line(WttlOutput.field("automatic drill-down", Component.literal(auto.isEnabled()
 				? String.format(Locale.ROOT, "on - triggers above %.0f ms/tick with a chunk over %.0f%%; %d captured",
 						auto.msptThresholdMs(), auto.shareThreshold() * 100.0, auto.captures().size())
-				: "off").withStyle(auto.isEnabled() ? ChatFormatting.GREEN : ChatFormatting.GRAY)), false);
-		source.sendSuccess(() -> WttlOutput.field("reports",
-				Component.literal(ReportStore.DIRECTORY_NAME + "/ in the game directory")), false);
+				: "off").withStyle(auto.isEnabled() ? ChatFormatting.GREEN : ChatFormatting.GRAY)));
+		out.line(WttlOutput.field("reports",
+				Component.literal(ReportStore.DIRECTORY_NAME + "/ in the game directory")));
+
+		out.send(source);
 		return 1;
 	}
 
@@ -287,7 +291,9 @@ public final class WttlCommand {
 		}
 
 		List<HeatReport.ChunkHeat> pageChunks = chunks.subList(offset, Math.min(offset + count, chunks.size()));
-		WttlOutput.sendHeat(source, report, pageChunks, offset + 1);
+		ChatReport out = new ChatReport();
+		WttlOutput.appendHeat(out, report, pageChunks, offset + 1);
+		out.send(source);
 		return pageChunks.size();
 	}
 
@@ -311,20 +317,21 @@ public final class WttlCommand {
 			return 0;
 		}
 
-		source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
-				"Inspecting chunk [%d, %d] (blocks %d,%d to %d,%d) in %s %s. Read it with /wttl object report.",
-				chunkX, chunkZ,
+		ChatReport out = new ChatReport();
+		out.line(Component.literal(String.format(Locale.ROOT,
+				"Inspecting chunk [%d, %d] %s", chunkX, chunkZ,
+				duration == null ? "until stopped" : "for " + duration.toSeconds() + "s"))
+				.withStyle(ChatFormatting.GREEN));
+		out.line(WttlOutput.detail(String.format(Locale.ROOT, "blocks %d,%d to %d,%d in %s",
 				SectionPos.sectionToBlockCoord(chunkX), SectionPos.sectionToBlockCoord(chunkZ),
 				SectionPos.sectionToBlockCoord(chunkX + 1) - 1, SectionPos.sectionToBlockCoord(chunkZ + 1) - 1,
-				level.dimension().identifier(),
-				duration == null ? "until stopped" : "for " + duration.toSeconds() + "s"))
-				.withStyle(ChatFormatting.GREEN), true);
-
+				level.dimension().identifier())));
 		if (flavour != null) {
-			source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
-					"  Sampling methods with %s. Read them with /wttl object methods.",
-					flavour.displayName())).withStyle(ChatFormatting.DARK_GRAY), false);
+			out.line(WttlOutput.detail("sampling methods with " + flavour.displayName()));
 		}
+		out.line(WttlOutput.detail("read it with /wttl object report"
+				+ (flavour == null ? "" : " and /wttl object methods")));
+		out.broadcast(source);
 		return 1;
 	}
 
@@ -350,12 +357,13 @@ public final class WttlCommand {
 				return;
 			}
 
-			target.sendSuccess(() -> Component.literal("Inspection finished.")
-					.withStyle(ChatFormatting.GREEN), false);
-			WttlOutput.sendObjects(target, objects, "");
+			ChatReport out = new ChatReport();
+			out.line(Component.literal("Inspection finished.").withStyle(ChatFormatting.GREEN));
+			WttlOutput.appendObjects(out, objects, "");
 			if (methods != null) {
-				WttlOutput.sendMethods(target, methods);
+				WttlOutput.appendMethods(out, methods);
 			}
+			out.send(target);
 		};
 	}
 
@@ -392,14 +400,16 @@ public final class WttlCommand {
 		}
 		if (breakdown.observedEvents() == 0L) {
 			source.sendFailure(Component.literal(String.format(Locale.ROOT,
-					"No object ticks recorded in chunk [%d, %d] (blocks %d,%d) yet - nothing there is ticking.",
+					"No object ticks recorded in chunk [%d, %d] at blocks %d,%d yet. Nothing there is ticking.",
 					ChunkPos.getX(breakdown.chunkKey()), ChunkPos.getZ(breakdown.chunkKey()),
 					SectionPos.sectionToBlockCoord(ChunkPos.getX(breakdown.chunkKey())),
 					SectionPos.sectionToBlockCoord(ChunkPos.getZ(breakdown.chunkKey())))));
 			return 0;
 		}
 
-		WttlOutput.sendObjects(source, breakdown, DeepProfiler.get().isRunning() ? ", still running" : "");
+		ChatReport out = new ChatReport();
+		WttlOutput.appendObjects(out, breakdown, DeepProfiler.get().isRunning() ? ", still running" : "");
+		out.send(source);
 		return 1;
 	}
 
@@ -414,13 +424,15 @@ public final class WttlCommand {
 		}
 		if (breakdown.samplesInChunk() == 0) {
 			source.sendFailure(Component.literal(String.format(Locale.ROOT,
-					"No stack samples landed inside the chunk (%,d were taken on the server thread). "
+					"No stack samples landed inside the chunk. %,d were taken on the server thread. "
 							+ "Either the chunk is a very small slice of the tick, or sampling produced nothing.",
 					breakdown.samplesOnThread())));
 			return 0;
 		}
 
-		WttlOutput.sendMethods(source, breakdown);
+		ChatReport out = new ChatReport();
+		WttlOutput.appendMethods(out, breakdown);
+		out.send(source);
 		return 1;
 	}
 
@@ -476,7 +488,9 @@ public final class WttlCommand {
 					"Nothing captured yet. Reports also land in " + ReportStore.DIRECTORY_NAME + "/."));
 			return 0;
 		}
-		WttlOutput.sendCaptureList(context.getSource(), captures);
+		ChatReport out = new ChatReport();
+		WttlOutput.appendCaptureList(out, captures);
+		out.send(context.getSource());
 		return captures.size();
 	}
 
@@ -492,13 +506,15 @@ public final class WttlCommand {
 		}
 
 		AutoCapture capture = captures.get(index - 1);
-		source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
-				"Captured automatically at %s, server averaging %.1f ms/tick",
-				capture.formattedTime(), capture.msptAtTrigger())).withStyle(ChatFormatting.GRAY), false);
-		WttlOutput.sendObjects(source, capture.objects(), "");
+		ChatReport out = new ChatReport();
+		out.line(Component.literal(String.format(Locale.ROOT,
+				"Captured automatically at %s · server averaging %.1f ms/tick",
+				capture.formattedTime(), capture.msptAtTrigger())).withStyle(ChatFormatting.GRAY));
+		WttlOutput.appendObjects(out, capture.objects(), "");
 		if (capture.methods() != null) {
-			WttlOutput.sendMethods(source, capture.methods());
+			WttlOutput.appendMethods(out, capture.methods());
 		}
+		out.send(source);
 		return 1;
 	}
 }

@@ -10,7 +10,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import net.minecraft.ChatFormatting;
+import net.minecraft.core.SectionPos;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.world.level.ChunkPos;
 import org.jetbrains.annotations.Nullable;
 import plus.mygo.whotickstoolong.WhoTicksTooLong;
 import plus.mygo.whotickstoolong.profile.ChunkProfiler;
@@ -38,6 +42,18 @@ public final class AutoDrillDown {
 	public static final double DEFAULT_MSPT_THRESHOLD_MS = 40.0;
 	public static final double DEFAULT_SHARE_THRESHOLD = 0.30;
 
+	/**
+	 * How far tick time must fall back before another capture can arm, as a fraction of the
+	 * trigger threshold.
+	 *
+	 * <p>A bare threshold flaps: a server hovering either side of it fires, recovers by a
+	 * hair, fires again. Requiring a genuine recovery before re-arming turns the threshold
+	 * into a band, so one sustained incident produces one capture rather than a burst of
+	 * them. The per-chunk cooldown does not cover this on its own, because a flapping server
+	 * can alternate between different culprits.
+	 */
+	private static final double RELEASE_FRACTION = 0.8;
+
 	/** Long enough that a chunk misbehaving in bursts does not capture over and over. */
 	private static final Duration COOLDOWN_PER_CHUNK = Duration.ofMinutes(5);
 	private static final Duration CAPTURE_DURATION = Duration.ofSeconds(30);
@@ -55,6 +71,9 @@ public final class AutoDrillDown {
 	private volatile boolean enabled;
 	private double msptThresholdMs = DEFAULT_MSPT_THRESHOLD_MS;
 	private double shareThreshold = DEFAULT_SHARE_THRESHOLD;
+
+	/** False after a capture until tick time falls back below the release band. */
+	private boolean armed = true;
 
 	private long lastEvaluationNanos;
 	private final Map<Long, Long> cooldownUntilNanos = new HashMap<>();
@@ -83,6 +102,7 @@ public final class AutoDrillDown {
 	public synchronized void enable(double msptThresholdMs, double shareThreshold) {
 		this.msptThresholdMs = msptThresholdMs;
 		this.shareThreshold = shareThreshold;
+		this.armed = true;
 		this.enabled = true;
 		WhoTicksTooLong.LOGGER.info("Automatic drill-down on: trigger above {} ms/tick with a chunk over {}%",
 				msptThresholdMs, Math.round(shareThreshold * 100.0));
@@ -111,7 +131,7 @@ public final class AutoDrillDown {
 
 		if (this.pending != null) {
 			if (!DeepProfiler.get().isRunning()) {
-				this.harvest();
+				this.harvest(server);
 			}
 			return;
 		}
@@ -122,7 +142,12 @@ public final class AutoDrillDown {
 		}
 
 		double mspt = server.getAverageTickTimeNanos() / 1e6;
-		if (mspt < this.msptThresholdMs) {
+
+		// Recovery re-arms the trigger; until then an elevated server stays quiet.
+		if (mspt < this.msptThresholdMs * RELEASE_FRACTION) {
+			this.armed = true;
+		}
+		if (mspt < this.msptThresholdMs || !this.armed) {
 			return;
 		}
 
@@ -146,10 +171,30 @@ public final class AutoDrillDown {
 			return;
 		}
 
-		this.trigger(suspect, mspt, share, now);
+		this.trigger(server, suspect, mspt, share, now);
 	}
 
-	private void trigger(HeatReport.ChunkHeat suspect, double mspt, double share, long now) {
+	/**
+	 * Tells whoever is on and holds operator rights, not just the log.
+	 *
+	 * <p>The whole point of automatic capture is that nobody was watching, so an incident that
+	 * only ever reaches a log file on disk is half a feature.
+	 */
+	private static void notifyOperators(MinecraftServer server, Component message) {
+		server.createCommandSourceStack().sendSuccess(() -> message, true);
+	}
+
+	private static String describe(int dimensionId, long chunkKey) {
+		int chunkX = ChunkPos.getX(chunkKey);
+		int chunkZ = ChunkPos.getZ(chunkKey);
+		return String.format(Locale.ROOT, "[%d, %d] @ %d,%d in %s",
+				chunkX, chunkZ,
+				SectionPos.sectionToBlockCoord(chunkX), SectionPos.sectionToBlockCoord(chunkZ),
+				ChunkProfiler.get().dimensions().nameOf(dimensionId));
+	}
+
+	private void trigger(MinecraftServer server, HeatReport.ChunkHeat suspect,
+			double mspt, double share, long now) {
 		try {
 			// No completion listener: an automatic capture writes itself to disk and logs a
 			// line, and there is by definition nobody waiting on a reply.
@@ -159,6 +204,7 @@ public final class AutoDrillDown {
 			return;
 		}
 
+		this.armed = false;
 		this.rememberCooldown(suspect.dimensionId(), suspect.chunkKey(), now);
 		this.pending = new Pending(LocalDateTime.now(), mspt, share,
 				suspect.dimensionId(), suspect.chunkKey());
@@ -167,9 +213,14 @@ public final class AutoDrillDown {
 				"Server averaging {} ms/tick with chunk key {} holding {}% of chunk tick time; capturing for {}s",
 				String.format(Locale.ROOT, "%.1f", mspt), suspect.chunkKey(),
 				Math.round(share * 100.0), CAPTURE_DURATION.toSeconds());
+
+		notifyOperators(server, Component.literal(String.format(Locale.ROOT,
+				"Server behind at %.1f ms/tick. Chunk %s holds %.0f%% of chunk tick time. Capturing for %ds.",
+				mspt, describe(suspect.dimensionId(), suspect.chunkKey()), share * 100.0,
+				CAPTURE_DURATION.toSeconds())).withStyle(ChatFormatting.GOLD));
 	}
 
-	private void harvest() {
+	private void harvest(MinecraftServer server) {
 		Pending captured = this.pending;
 		this.pending = null;
 		if (captured == null) {
@@ -195,6 +246,12 @@ public final class AutoDrillDown {
 		while (this.captures.size() > MAX_KEPT_CAPTURES) {
 			this.captures.removeLast();
 		}
+
+		String worst = objects.types().isEmpty() ? "nothing identifiable" : objects.types().get(0).type();
+		notifyOperators(server, Component.literal(String.format(Locale.ROOT,
+				"Capture finished. Chunk %s cost %.3f ms per tick, mostly %s. Read it with /wttl auto show 1",
+				describe(captured.dimensionId(), captured.chunkKey()), objects.millisPerTick(), worst))
+				.withStyle(ChatFormatting.GOLD));
 	}
 
 	private boolean isCoolingDown(int dimensionId, long chunkKey, long now) {

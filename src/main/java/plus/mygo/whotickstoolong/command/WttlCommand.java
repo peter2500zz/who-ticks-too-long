@@ -5,16 +5,20 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import com.mojang.brigadier.exceptions.DynamicCommandExceptionType;
+import com.mojang.brigadier.suggestion.Suggestions;
+import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.commands.arguments.DimensionArgument;
+import net.minecraft.core.SectionPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
@@ -23,7 +27,6 @@ import plus.mygo.whotickstoolong.auto.AutoCapture;
 import plus.mygo.whotickstoolong.auto.AutoDrillDown;
 import plus.mygo.whotickstoolong.profile.ChunkProfiler;
 import plus.mygo.whotickstoolong.profile.HeatReport;
-import plus.mygo.whotickstoolong.profile.HeatWindow;
 import plus.mygo.whotickstoolong.profile.SamplerStats;
 import plus.mygo.whotickstoolong.profile.deep.DeepProfiler;
 import plus.mygo.whotickstoolong.profile.deep.MethodBreakdown;
@@ -31,6 +34,7 @@ import plus.mygo.whotickstoolong.profile.deep.ObjectBreakdown;
 import plus.mygo.whotickstoolong.profile.deep.SamplerFlavour;
 import plus.mygo.whotickstoolong.report.ReportStore;
 import plus.mygo.whotickstoolong.report.TextReport;
+import plus.mygo.whotickstoolong.util.DurationSyntax;
 
 /**
  * The {@code /wttl} command tree: switch a level of monitoring on or off, ask what the
@@ -45,10 +49,10 @@ public final class WttlCommand {
 	private static final int DEFAULT_COUNT = 10;
 	private static final int MAX_COUNT = 50;
 	private static final int MAX_SAVED_ROWS = 100;
-	private static final HeatWindow DEFAULT_WINDOW = HeatWindow.MEDIUM;
+	private static final Duration DEFAULT_WINDOW = Duration.ofMinutes(1);
 
-	private static final List<String> WINDOW_NAMES =
-			Arrays.stream(HeatWindow.values()).map(HeatWindow::label).toList();
+	private static final DynamicCommandExceptionType ERROR_BAD_WINDOW =
+			new DynamicCommandExceptionType(reason -> Component.literal(String.valueOf(reason)));
 
 	private WttlCommand() {
 	}
@@ -77,7 +81,7 @@ public final class WttlCommand {
 				.then(Commands.argument("count", IntegerArgumentType.integer(1, MAX_COUNT))
 						.executes(context -> top(context, count(context), DEFAULT_WINDOW, 1))
 						.then(Commands.argument("window", StringArgumentType.word())
-								.suggests((context, builder) -> SharedSuggestionProvider.suggest(WINDOW_NAMES, builder))
+								.suggests(WttlCommand::suggestWindows)
 								.executes(context -> top(context, count(context), window(context), 1))
 								.then(Commands.argument("page", IntegerArgumentType.integer(1))
 										.executes(context -> top(context, count(context), window(context),
@@ -140,8 +144,29 @@ public final class WttlCommand {
 		return IntegerArgumentType.getInteger(context, "count");
 	}
 
-	private static HeatWindow window(CommandContext<CommandSourceStack> context) {
-		return HeatWindow.byName(StringArgumentType.getString(context, "window"));
+	/**
+	 * Accepts vanilla {@code /time} syntax extended with minutes and hours: 200, 200t, 30s,
+	 * 5m, 1h. A bare number means ticks, as it does in vanilla.
+	 */
+	private static Duration window(CommandContext<CommandSourceStack> context)
+			throws CommandSyntaxException {
+		String raw = StringArgumentType.getString(context, "window");
+		try {
+			return DurationSyntax.parse(raw);
+		} catch (IllegalArgumentException e) {
+			throw ERROR_BAD_WINDOW.create(e.getMessage());
+		}
+	}
+
+	/** Mirrors vanilla's {@code /time}: once a number is typed, offer the units after it. */
+	private static CompletableFuture<Suggestions> suggestWindows(
+			CommandContext<CommandSourceStack> context, SuggestionsBuilder builder) {
+		int typedNumber = DurationSyntax.leadingNumberLength(builder.getRemaining());
+		if (typedNumber > 0) {
+			return SharedSuggestionProvider.suggest(DurationSyntax.UNITS,
+					builder.createOffset(builder.getStart() + typedNumber));
+		}
+		return SharedSuggestionProvider.suggest(DurationSyntax.COMMON_WINDOWS, builder);
 	}
 
 	private static Duration seconds(CommandContext<CommandSourceStack> context) {
@@ -227,10 +252,11 @@ public final class WttlCommand {
 		return 1;
 	}
 
-	private static int top(CommandContext<CommandSourceStack> context, int count, HeatWindow window, int page) {
+	private static int top(CommandContext<CommandSourceStack> context, int count, Duration window, int page) {
 		CommandSourceStack source = context.getSource();
 		int offset = (page - 1) * count;
 		HeatReport report = ChunkProfiler.get().report(window, offset + count);
+		String label = DurationSyntax.format(window);
 
 		if (report == null) {
 			source.sendFailure(Component.literal(
@@ -238,7 +264,7 @@ public final class WttlCommand {
 			return 0;
 		}
 		if (report.totalSamples() == 0) {
-			source.sendFailure(Component.literal("No samples in the last " + window.label() + " yet."));
+			source.sendFailure(Component.literal("No samples in the last " + label + " yet."));
 			return 0;
 		}
 
@@ -246,7 +272,7 @@ public final class WttlCommand {
 		if (chunks.isEmpty()) {
 			source.sendFailure(Component.literal(String.format(Locale.ROOT,
 					"No chunk work in the last %s - all %,d samples caught the server thread idle.",
-					window.label(), report.totalSamples())));
+					label, report.totalSamples())));
 			return 0;
 		}
 		if (offset >= chunks.size()) {
@@ -280,8 +306,11 @@ public final class WttlCommand {
 		}
 
 		source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
-				"Inspecting chunk [%d, %d] in %s %s. Read it with /wttl object report.",
-				chunkX, chunkZ, level.dimension().identifier(),
+				"Inspecting chunk [%d, %d] (blocks %d,%d to %d,%d) in %s %s. Read it with /wttl object report.",
+				chunkX, chunkZ,
+				SectionPos.sectionToBlockCoord(chunkX), SectionPos.sectionToBlockCoord(chunkZ),
+				SectionPos.sectionToBlockCoord(chunkX + 1) - 1, SectionPos.sectionToBlockCoord(chunkZ + 1) - 1,
+				level.dimension().identifier(),
 				duration == null ? "until stopped" : "for " + duration.toSeconds() + "s"))
 				.withStyle(ChatFormatting.GREEN), true);
 
@@ -316,8 +345,10 @@ public final class WttlCommand {
 		}
 		if (breakdown.observedEvents() == 0L) {
 			source.sendFailure(Component.literal(String.format(Locale.ROOT,
-					"No object ticks recorded in chunk [%d, %d] yet - nothing there is ticking.",
-					ChunkPos.getX(breakdown.chunkKey()), ChunkPos.getZ(breakdown.chunkKey()))));
+					"No object ticks recorded in chunk [%d, %d] (blocks %d,%d) yet - nothing there is ticking.",
+					ChunkPos.getX(breakdown.chunkKey()), ChunkPos.getZ(breakdown.chunkKey()),
+					SectionPos.sectionToBlockCoord(ChunkPos.getX(breakdown.chunkKey())),
+					SectionPos.sectionToBlockCoord(ChunkPos.getZ(breakdown.chunkKey())))));
 			return 0;
 		}
 

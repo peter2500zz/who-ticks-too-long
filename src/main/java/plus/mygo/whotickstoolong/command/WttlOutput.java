@@ -1,10 +1,12 @@
 package plus.mygo.whotickstoolong.command;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.network.chat.Component;
+import net.minecraft.core.SectionPos;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.world.level.ChunkPos;
 import plus.mygo.whotickstoolong.auto.AutoCapture;
@@ -12,6 +14,7 @@ import plus.mygo.whotickstoolong.profile.ChunkProfiler;
 import plus.mygo.whotickstoolong.profile.HeatReport;
 import plus.mygo.whotickstoolong.profile.deep.MethodBreakdown;
 import plus.mygo.whotickstoolong.profile.deep.ObjectBreakdown;
+import plus.mygo.whotickstoolong.util.DurationSyntax;
 
 /**
  * Turns profiler results into chat lines.
@@ -20,6 +23,8 @@ import plus.mygo.whotickstoolong.profile.deep.ObjectBreakdown;
  * capture the profiler took by itself hours earlier.
  */
 final class WttlOutput {
+
+	private static final String VANILLA_NAMESPACE = "minecraft:";
 
 	private WttlOutput() {
 	}
@@ -51,10 +56,22 @@ final class WttlOutput {
 		source.sendSuccess(() -> component, false);
 	}
 
+	/**
+	 * Chunk coordinates alone are not something a player can walk to, so the chunk's origin
+	 * block goes with them. That is the corner to type into a teleport.
+	 */
 	private static String chunkLabel(int dimensionId, long chunkKey) {
-		return String.format(Locale.ROOT, "[%d, %d] %s",
-				ChunkPos.getX(chunkKey), ChunkPos.getZ(chunkKey),
-				ChunkProfiler.get().dimensions().nameOf(dimensionId));
+		int chunkX = ChunkPos.getX(chunkKey);
+		int chunkZ = ChunkPos.getZ(chunkKey);
+		return String.format(Locale.ROOT, "[%d, %d] @ %d,%d %s",
+				chunkX, chunkZ,
+				SectionPos.sectionToBlockCoord(chunkX), SectionPos.sectionToBlockCoord(chunkZ),
+				shortDimension(ChunkProfiler.get().dimensions().nameOf(dimensionId)));
+	}
+
+	/** Vanilla dimensions read better without the namespace that every one of them shares. */
+	private static String shortDimension(String name) {
+		return name.startsWith(VANILLA_NAMESPACE) ? name.substring(VANILLA_NAMESPACE.length()) : name;
 	}
 
 	// ------------------------------------------------------------- chunk ranking
@@ -69,10 +86,20 @@ final class WttlOutput {
 
 	static void sendHeat(CommandSourceStack source, HeatReport report,
 			List<HeatReport.ChunkHeat> page, int firstRank) {
-		line(source, header(String.format(Locale.ROOT, "Hottest chunks - %s window", report.window().label())));
+		line(source, header(String.format(Locale.ROOT, "Hottest chunks - %s window",
+				DurationSyntax.format(report.requested()))));
 		line(source, Component.literal(String.format(Locale.ROOT,
 				"  %,d samples, %.1f%% of wall time spent ticking chunks",
 				report.totalSamples(), report.busyShare() * 100.0)).withStyle(ChatFormatting.DARK_GRAY));
+
+		if (report.truncated()) {
+			// Asking for more history than the ring holds is not an error, but silently
+			// answering a shorter window than was asked for would be misleading.
+			line(source, Component.literal(String.format(Locale.ROOT,
+					"  Only %s of samples are retained, so that is what this covers.",
+					DurationSyntax.format(Duration.ofNanos(report.spanNanos()))))
+					.withStyle(ChatFormatting.YELLOW));
+		}
 
 		int rank = firstRank;
 		for (HeatReport.ChunkHeat chunk : page) {

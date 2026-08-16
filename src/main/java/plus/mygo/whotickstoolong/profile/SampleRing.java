@@ -3,6 +3,7 @@ package plus.mygo.whotickstoolong.profile;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -72,8 +73,8 @@ public final class SampleRing {
 	 * <p>Walks backwards from the newest sample and stops at the first one older than the
 	 * window, so a short window costs proportionally little even when the ring is full.
 	 */
-	public synchronized HeatReport aggregate(HeatWindow window, int limit, long now) {
-		long cutoff = now - window.nanos();
+	public synchronized HeatReport aggregate(Duration window, int limit, long now) {
+		long cutoff = now - window.toNanos();
 		Int2ObjectOpenHashMap<Long2ObjectMap<Accumulator>> perDimension = new Int2ObjectOpenHashMap<>();
 
 		int total = 0;

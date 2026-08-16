@@ -1,23 +1,32 @@
 package plus.mygo.whotickstoolong.profile;
 
+import java.time.Duration;
 import java.util.List;
 
 /**
  * The result of aggregating raw samples over one rolling window.
  *
- * @param window        the window that was asked for
- * @param spanNanos     the wall time actually covered by the samples that were found
+ * @param requested     the window that was asked for
+ * @param spanNanos     the wall time actually covered by the samples that were found, which
+ *                      falls short of {@code requested} when the ring holds less history
  * @param totalSamples  every sample in the window, including idle ones
  * @param idleSamples   samples taken while the server thread was not ticking any chunk
  * @param chunks        the hottest chunks, already sorted, longest first
  */
 public record HeatReport(
-		HeatWindow window,
+		Duration requested,
 		long spanNanos,
 		int totalSamples,
 		int idleSamples,
 		List<ChunkHeat> chunks
 ) {
+	/** True when the ring could not reach as far back as the caller asked. */
+	public boolean truncated() {
+		// A sample only marks the instant it was taken, so the covered span is always a
+		// little short of the request; only a real shortfall is worth reporting.
+		return this.spanNanos > 0L && this.requested.toNanos() - this.spanNanos > Duration.ofSeconds(1).toNanos();
+	}
+
 	/** Samples taken while the server thread was inside some chunk's tick. */
 	public int busySamples() {
 		return this.totalSamples - this.idleSamples;

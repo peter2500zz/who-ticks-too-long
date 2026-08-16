@@ -111,7 +111,7 @@ public final class DeepSession implements AutoCloseable {
 
 			// Movable objects change position every tick, so only fixed ones can be
 			// identified by where they are; the rest are identified by their entity id.
-			boolean movable = TickPhase.ENTITY.displayName().equals(kind);
+			boolean movable = TickPhase.ENTITY.translationKey().equals(kind);
 			InstanceKey instanceKey = movable
 					? new InstanceKey(kind, type, objectId, 0, 0, 0)
 					: new InstanceKey(kind, type, 0, x, y, z);

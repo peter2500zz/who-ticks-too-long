@@ -45,8 +45,7 @@ public final class DurationSyntax {
 	public static Duration parse(String text) {
 		Matcher matcher = SYNTAX.matcher(text.trim());
 		if (!matcher.matches()) {
-			throw new IllegalArgumentException(
-					"'" + text + "' is not a duration. Write a number and a unit, such as 30s, 5m or 1h.");
+			throw new InvalidDuration("wttl.window.bad_syntax", text);
 		}
 
 		double value = Double.parseDouble(matcher.group(1));
@@ -58,14 +57,34 @@ public final class DurationSyntax {
 			case "s" -> Duration.ofMillis(Math.round(value * 1000.0));
 			case "m" -> Duration.ofMillis(Math.round(value * 1000.0 * SECONDS_PER_MINUTE));
 			case "h" -> Duration.ofMillis(Math.round(value * 1000.0 * SECONDS_PER_HOUR));
-			default -> throw new IllegalArgumentException(
-					"'" + unit + "' is not a unit. Use t for ticks, s, m or h.");
+			default -> throw new InvalidDuration("wttl.window.bad_unit", unit);
 		};
 
 		if (duration.isZero() || duration.isNegative()) {
-			throw new IllegalArgumentException("A window has to be longer than zero.");
+			throw new InvalidDuration("wttl.window.not_positive");
 		}
 		return duration;
+	}
+
+	/** Carries a translation key so the reason can be shown in the reader's own language. */
+	public static final class InvalidDuration extends IllegalArgumentException {
+
+		private final transient String key;
+		private final transient Object[] args;
+
+		InvalidDuration(String key, Object... args) {
+			super(key);
+			this.key = key;
+			this.args = args;
+		}
+
+		public String key() {
+			return this.key;
+		}
+
+		public Object[] args() {
+			return this.args.clone();
+		}
 	}
 
 	/**

@@ -23,6 +23,3 @@ bin/
 # OS
 .DS_Store
 Thumbs.db
-
-# AI-authored design notes; the reviewed README.md is maintained separately
-README.md.ai

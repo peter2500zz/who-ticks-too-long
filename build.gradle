@@ -4,6 +4,11 @@ plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
+// The artifact version carries the game and loader it was built against, so a jar that has
+// been separated from its download page still says what it is. Both live in the build
+// metadata after the plus sign, which semantic versioning ignores when ordering releases.
+version = "${mod_version}+mc${minecraft_version}-fabric"
+
 loom {
 	mods {
 		"whotickstoolong" {

@@ -23,6 +23,7 @@ public final class ChunkHeatSampler {
 	private static final double JITTER_FRACTION = 0.25;
 
 	private final SampleRing ring;
+	private final BucketRing buckets;
 	private final int rateHz;
 	private final long intervalNanos;
 	private final long jitterNanos;
@@ -34,11 +35,12 @@ public final class ChunkHeatSampler {
 	private volatile long samplesTaken;
 	private volatile long samplesDiscarded;
 
-	public ChunkHeatSampler(SampleRing ring, int rateHz) {
+	public ChunkHeatSampler(SampleRing ring, BucketRing buckets, int rateHz) {
 		if (rateHz <= 0) {
 			throw new IllegalArgumentException("sample rate must be positive, was " + rateHz);
 		}
 		this.ring = ring;
+		this.buckets = buckets;
 		this.rateHz = rateHz;
 		this.intervalNanos = 1_000_000_000L / rateHz;
 		this.jitterNanos = Math.max(1L, (long) (this.intervalNanos * JITTER_FRACTION));
@@ -112,7 +114,10 @@ public final class ChunkHeatSampler {
 			return;
 		}
 
+		// Both tiers see every sample: the raw ring keeps it whole for a few minutes, the
+		// bucket ring counts it and keeps only the count for hours.
 		this.ring.append(now, dimension, chunkKey, phase);
+		this.buckets.record(now, dimension, chunkKey, phase);
 		this.lastSampleNanos = now;
 		this.samplesTaken++;
 	}
@@ -130,7 +135,7 @@ public final class ChunkHeatSampler {
 				achieved,
 				this.samplerCpuNanos(),
 				TickContext.readEnterCount(),
-				this.ring.approximateBytes(),
+				this.ring.approximateBytes() + this.buckets.approximateBytes(),
 				span);
 	}
 

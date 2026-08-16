@@ -20,16 +20,23 @@ public final class ChunkProfiler {
 	public static final int DEFAULT_SAMPLE_RATE_HZ = 1000;
 
 	/**
-	 * How far back the sample ring reaches. Any window may be asked for, but one longer than
-	 * this simply returns everything retained, and the report says so.
+	 * How far back whole samples are kept. Windows within this reach are answered exactly,
+	 * down to the individual sample.
 	 */
-	public static final Duration RETENTION = Duration.ofMinutes(5);
+	public static final Duration RAW_RETENTION = Duration.ofMinutes(5);
+
+	/**
+	 * How far back counted history reaches. Beyond {@link #RAW_RETENTION} samples are folded
+	 * into buckets, which answer a ranking just as well for a fraction of the memory.
+	 */
+	public static final Duration RETENTION = Duration.ofHours(6);
 
 	private static final ChunkProfiler INSTANCE = new ChunkProfiler();
 
 	private final DimensionTable dimensions = new DimensionTable();
 
 	private @Nullable SampleRing ring;
+	private @Nullable BucketRing buckets;
 	private @Nullable ChunkHeatSampler sampler;
 	private int sampleRateHz = DEFAULT_SAMPLE_RATE_HZ;
 
@@ -58,11 +65,13 @@ public final class ChunkProfiler {
 			return false;
 		}
 
-		int capacity = Math.multiplyExact(Math.toIntExact(RETENTION.toSeconds()), this.sampleRateHz);
+		int capacity = Math.multiplyExact(Math.toIntExact(RAW_RETENTION.toSeconds()), this.sampleRateHz);
 		SampleRing freshRing = new SampleRing(capacity);
-		ChunkHeatSampler freshSampler = new ChunkHeatSampler(freshRing, this.sampleRateHz);
+		BucketRing freshBuckets = new BucketRing(RETENTION);
+		ChunkHeatSampler freshSampler = new ChunkHeatSampler(freshRing, freshBuckets, this.sampleRateHz);
 
 		this.ring = freshRing;
+		this.buckets = freshBuckets;
 		this.sampler = freshSampler;
 
 		// The hot path must only start publishing once there is somewhere to publish to.
@@ -90,15 +99,30 @@ public final class ChunkProfiler {
 		}
 		this.sampler = null;
 		this.ring = null;
+		this.buckets = null;
 
 		WhoTicksTooLong.LOGGER.info("Chunk heat monitoring off; sample buffer released.");
 		return true;
 	}
 
-	/** @return null when monitoring is off, so the caller can say so rather than show zeroes */
+	/**
+	 * Answers from whichever tier reaches far enough.
+	 *
+	 * <p>Short windows come from whole samples, which is exact to the individual sample.
+	 * Longer ones come from counted buckets, which give the same ranking because a ranking is
+	 * a comparison of counts, and cost a fraction of the memory to keep.
+	 *
+	 * @return null when monitoring is off, so the caller can say so rather than show zeroes
+	 */
 	public @Nullable HeatReport report(Duration window, int limit) {
-		SampleRing current = this.ring;
-		return current == null ? null : current.aggregate(window, limit, System.nanoTime());
+		long now = System.nanoTime();
+		if (window.compareTo(RAW_RETENTION) <= 0) {
+			SampleRing current = this.ring;
+			return current == null ? null : current.aggregate(window, limit, now);
+		}
+
+		BucketRing counted = this.buckets;
+		return counted == null ? null : counted.aggregate(window, limit, now);
 	}
 
 	public @Nullable SamplerStats stats() {

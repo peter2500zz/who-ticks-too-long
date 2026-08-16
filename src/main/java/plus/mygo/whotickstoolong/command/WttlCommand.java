@@ -183,6 +183,11 @@ public final class WttlCommand {
 
 		source.sendSuccess(() -> WttlOutput.header("Who Ticks Too Long"), false);
 
+		// The number an operator needs before choosing an automatic drill-down threshold.
+		double msptNow = source.getServer().getAverageTickTimeNanos() / 1e6;
+		source.sendSuccess(() -> WttlOutput.field("server", Component.literal(String.format(Locale.ROOT,
+				"%.2f ms/tick averaged over the last 100 ticks", msptNow))), false);
+
 		if (stats == null) {
 			source.sendSuccess(() -> WttlOutput.field("chunk heat",
 					Component.literal("off").withStyle(ChatFormatting.GRAY)), false);

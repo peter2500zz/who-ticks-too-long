@@ -28,7 +28,7 @@
 
 | 项目 | 版本 |
 | --- | --- |
-| Minecraft | 26.2 |
+| Minecraft | 26.3 |
 | Fabric Loader | 0.19.3 或更高 |
 | Fabric API | 必需 |
 | Java | 25 |

@@ -146,9 +146,9 @@ Minecraft 26.1 起官方不再混淆代码，构建方式与旧版本差异很�
 
 | 组件 | 版本 |
 | --- | --- |
-| Minecraft | 26.2 |
+| Minecraft | 26.3 |
 | Fabric Loom | 1.17.19 |
 | Fabric Loader | 0.19.3 |
-| Fabric API | 0.157.0+26.2 |
+| Fabric API | 0.161.0+26.3 |
 | Gradle | 9.5.1 |
 | Java | 25 |
